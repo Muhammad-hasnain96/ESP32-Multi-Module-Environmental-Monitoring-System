@@ -1,0 +1,90 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1200" viewBox="0 0 1600 1200">
+  <rect width="1600" height="1200" fill="#f5f7fa"/>
+  <style>
+    .title { font: 700 34px Arial, sans-serif; fill: #17202a; }
+    .subtitle { font: 700 22px Arial, sans-serif; fill: #17202a; }
+    .label { font: 18px Arial, sans-serif; fill: #17202a; }
+    .small { font: 15px Arial, sans-serif; fill: #34495e; }
+    .box { stroke: #34495e; stroke-width: 2; rx: 10; }
+    .wire { stroke: #2471a3; stroke-width: 4; fill: none; }
+    .arrow { stroke: #566573; stroke-width: 3; fill: none; marker-end: url(#arrowhead); }
+  </style>
+  <defs>
+    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#566573"/>
+    </marker>
+  </defs>
+
+  <text x="800" y="55" text-anchor="middle" class="title">ESP32 Three-Sensor System</text>
+  <line x1="80" y1="80" x2="1520" y2="80" stroke="#ccd1d1" stroke-width="2"/>
+
+  <text x="800" y="125" text-anchor="middle" class="subtitle">Wiring Diagram</text>
+
+  <rect x="590" y="175" width="420" height="320" class="box" fill="#d6eaf8"/>
+  <text x="800" y="220" text-anchor="middle" class="subtitle">ESP32 DOIT DEVKIT V1</text>
+  <text x="620" y="270" class="label">5V / VIN</text>
+  <text x="620" y="320" class="label">3V3</text>
+  <text x="620" y="370" class="label">GND</text>
+  <text x="620" y="420" class="label">GPIO4</text>
+  <text x="620" y="455" class="label">GPIO27</text>
+  <text x="620" y="490" class="label">GPIO34</text>
+
+  <rect x="100" y="205" width="300" height="110" class="box" fill="#fcf3cf"/>
+  <text x="250" y="245" text-anchor="middle" class="subtitle">TDS Meter V1.0</text>
+  <text x="130" y="280" class="label">VCC -> 5V/VIN</text>
+  <text x="130" y="305" class="label">AO -> GPIO34</text>
+
+  <rect x="100" y="350" width="300" height="110" class="box" fill="#d5f5e3"/>
+  <text x="250" y="390" text-anchor="middle" class="subtitle">DHT11</text>
+  <text x="130" y="425" class="label">VCC -> 3.3V</text>
+  <text x="130" y="450" class="label">DATA -> GPIO4</text>
+
+  <rect x="1100" y="275" width="340" height="125" class="box" fill="#fadbd8"/>
+  <text x="1270" y="315" text-anchor="middle" class="subtitle">Water Flow Sensor</text>
+  <text x="1130" y="350" class="label">VCC -> 3.3V</text>
+  <text x="1130" y="375" class="label">SIGNAL -> GPIO27</text>
+
+  <line x1="400" y1="280" x2="590" y2="270" class="wire"/>
+  <line x1="400" y1="305" x2="590" y2="490" class="wire"/>
+  <line x1="400" y1="425" x2="590" y2="320" class="wire"/>
+  <line x1="400" y1="450" x2="590" y2="420" class="wire"/>
+  <line x1="1010" y1="320" x2="1100" y2="350" class="wire"/>
+  <line x1="1010" y1="455" x2="1100" y2="375" class="wire"/>
+  <line x1="590" y1="370" x2="500" y2="370" class="wire"/>
+  <text x="430" y="520" class="small">All sensor GND pins -> ESP32 GND</text>
+
+  <text x="800" y="570" text-anchor="middle" class="subtitle">Data Workflow</text>
+
+  <rect x="90" y="620" width="210" height="70" class="box" fill="#d5f5e3"/>
+  <text x="195" y="648" text-anchor="middle" class="label">DHT11 GPIO4</text>
+  <text x="195" y="675" text-anchor="middle" class="small">Temperature / Humidity</text>
+
+  <rect x="350" y="620" width="210" height="70" class="box" fill="#fadbd8"/>
+  <text x="455" y="648" text-anchor="middle" class="label">Flow GPIO27</text>
+  <text x="455" y="675" text-anchor="middle" class="small">Pulse counting</text>
+
+  <rect x="610" y="620" width="210" height="70" class="box" fill="#fcf3cf"/>
+  <text x="715" y="648" text-anchor="middle" class="label">TDS GPIO34</text>
+  <text x="715" y="675" text-anchor="middle" class="small">Analog voltage</text>
+
+  <rect x="880" y="620" width="230" height="70" class="box" fill="#d6eaf8"/>
+  <text x="995" y="648" text-anchor="middle" class="label">ESP32 Processing</text>
+  <text x="995" y="675" text-anchor="middle" class="small">Every 15 seconds</text>
+
+  <rect x="1170" y="620" width="300" height="70" class="box" fill="#e8daef"/>
+  <text x="1320" y="648" text-anchor="middle" class="label">Google Sheets</text>
+  <text x="1320" y="675" text-anchor="middle" class="small">One complete data row</text>
+
+  <path d="M300 655 H350" class="arrow"/>
+  <path d="M560 655 H610" class="arrow"/>
+  <path d="M820 655 H880" class="arrow"/>
+  <path d="M1110 655 H1170" class="arrow"/>
+
+  <rect x="180" y="770" width="1240" height="270" class="box" fill="#ffffff"/>
+  <text x="800" y="815" text-anchor="middle" class="subtitle">Processing and Sheet Fields</text>
+  <text x="230" y="860" class="label">DHT11: temperature, humidity, heat index</text>
+  <text x="230" y="900" class="label">Flow sensor: pulses -> flow rate and total liters</text>
+  <text x="230" y="940" class="label">TDS: voltage -> temperature-compensated TDS (ppm)</text>
+  <text x="230" y="980" class="label">EC estimate: EC (uS/cm) = TDS (ppm) / 0.5</text>
+  <text x="230" y="1020" class="small">Sheet fields: timestamp, temperature, humidity, heat index, flow rate, total liters, TDS, voltage, EC</text>
+</svg>

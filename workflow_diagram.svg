@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900">
+  <rect width="1600" height="900" fill="#f5f7fa"/>
+  <style>
+    .title { font: 700 36px Arial, sans-serif; fill: #17202a; }
+    .heading { font: 700 23px Arial, sans-serif; fill: #17202a; }
+    .label { font: 18px Arial, sans-serif; fill: #17202a; }
+    .small { font: 15px Arial, sans-serif; fill: #34495e; }
+    .box { stroke: #34495e; stroke-width: 2; rx: 10; }
+    .arrow { stroke: #566573; stroke-width: 3; fill: none; marker-end: url(#arrowhead); }
+  </style>
+  <defs>
+    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#566573"/>
+    </marker>
+  </defs>
+
+  <text x="800" y="60" text-anchor="middle" class="title">ESP32 Three-Sensor Data Workflow</text>
+  <text x="800" y="95" text-anchor="middle" class="small">DHT11 + Water Flow + TDS Meter V1.0</text>
+
+  <rect x="70" y="170" width="260" height="110" class="box" fill="#d5f5e3"/>
+  <text x="200" y="215" text-anchor="middle" class="heading">DHT11</text>
+  <text x="200" y="250" text-anchor="middle" class="label">GPIO4</text>
+  <text x="200" y="272" text-anchor="middle" class="small">Temperature / Humidity</text>
+
+  <rect x="390" y="170" width="260" height="110" class="box" fill="#fadbd8"/>
+  <text x="520" y="215" text-anchor="middle" class="heading">Water Flow</text>
+  <text x="520" y="250" text-anchor="middle" class="label">GPIO27</text>
+  <text x="520" y="272" text-anchor="middle" class="small">Pulse counting</text>
+
+  <rect x="710" y="170" width="260" height="110" class="box" fill="#fcf3cf"/>
+  <text x="840" y="215" text-anchor="middle" class="heading">TDS Meter V1.0</text>
+  <text x="840" y="250" text-anchor="middle" class="label">GPIO34 analog</text>
+  <text x="840" y="272" text-anchor="middle" class="small">Voltage sampling</text>
+
+  <path d="M200 280 V350 H800" class="arrow"/>
+  <path d="M520 280 V350" class="arrow"/>
+  <path d="M840 280 V350" class="arrow"/>
+
+  <rect x="660" y="350" width="280" height="105" class="box" fill="#d6eaf8"/>
+  <text x="800" y="395" text-anchor="middle" class="heading">ESP32 Processing</text>
+  <text x="800" y="430" text-anchor="middle" class="small">Every 15 seconds</text>
+
+  <path d="M800 455 V520" class="arrow"/>
+  <rect x="510" y="520" width="580" height="130" class="box" fill="#ffffff"/>
+  <text x="800" y="560" text-anchor="middle" class="heading">Calculations</text>
+  <text x="800" y="590" text-anchor="middle" class="small">Heat index | Flow rate | Total liters</text>
+  <text x="800" y="615" text-anchor="middle" class="small">Temperature-compensated TDS | Estimated EC</text>
+
+  <path d="M800 650 V715" class="arrow"/>
+  <rect x="560" y="715" width="480" height="90" class="box" fill="#e8daef"/>
+  <text x="800" y="755" text-anchor="middle" class="heading">Google Apps Script</text>
+  <text x="800" y="785" text-anchor="middle" class="small">HTTPS GET request</text>
+
+  <path d="M1040 760 H1260" class="arrow"/>
+  <rect x="1260" y="715" width="250" height="90" class="box" fill="#d6eaf8"/>
+  <text x="1385" y="755" text-anchor="middle" class="heading">Google Sheet</text>
+  <text x="1385" y="785" text-anchor="middle" class="small">One complete row</text>
+
+  <rect x="1080" y="170" width="400" height="180" class="box" fill="#ffffff"/>
+  <text x="1280" y="210" text-anchor="middle" class="heading">Data Sent</text>
+  <text x="1110" y="245" class="small">Temperature, humidity, heat index</text>
+  <text x="1110" y="272" class="small">Flow rate and total liters</text>
+  <text x="1110" y="299" class="small">TDS ppm and TDS voltage</text>
+  <text x="1110" y="326" class="small">EC uS/cm and EC mS/cm</text>
+</svg>
