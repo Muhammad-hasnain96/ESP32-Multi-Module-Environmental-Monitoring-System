@@ -1,5 +1,5 @@
-﻿// =====================================================================
-// ESP32 — MODULE 3: Complete Light, Soil & Environmental System
+// =====================================================================
+// ESP32 — MODULE 3: Light, Soil & Environmental System
 // =====================================================================
 // SENSOR WIRING:
 //   1. DHT11 Sensor:
@@ -18,12 +18,19 @@
 //      - AOUT  -> GPIO 34 (ADC1_CH6 - Analog Input)
 //      - VCC   -> 3.3V
 //      - GND   -> GND
+//
+//   [COMMENTED / OPTIONAL] 4. HX711 5kg Load Cell:
+//      - DT    -> GPIO 14
+//      - SCK   -> GPIO 12
+//      - VCC   -> 5V (VIN)
+//      - GND   -> GND
 // =====================================================================
 
 #include <Arduino.h>
 #include <Wire.h>
 #include <DHT.h>
 #include <BH1750.h>
+// #include "HX711.h"
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
@@ -55,9 +62,17 @@ const float LIGHT_CAL_FACTOR = 0.7308f;
 #define ADC_RESOLUTION   4095.0f
 
 // Calibration reference values (ADC 0-4095)
-// Dry air: ~2900 - 3200 | Immersed in water: ~1300 - 1500
-const int AIR_VALUE   = 3000; // Value in dry air (0% moisture)
-const int WATER_VALUE = 1350; // Value in pure water (100% moisture)
+const int AIR_VALUE   = 3000; // Dry air (0% moisture)
+const int WATER_VALUE = 1350; // Pure water (100% moisture)
+
+// =====================================================================
+//  [COMMENTED] 4. HX711 Load Cell Configuration
+// =====================================================================
+// #define HX711_DOUT_PIN  14
+// #define HX711_SCK_PIN   12
+// HX711 scale;
+// bool scale_available = false;
+// float scale_calibration_factor = 420.0f;
 
 // =====================================================================
 //  WiFi & ThingsBoard Configuration
@@ -104,11 +119,11 @@ const char* getLightStatus(float lux) {
 
 // Soil Moisture Status Classification
 const char* getSoilStatus(float pct) {
-    if (pct < 15.0f)  return "VERY DRY (Needs Watering Urgently)";
-    if (pct < 35.0f)  return "DRY (Water Soon)";
-    if (pct < 65.0f)  return "OPTIMAL (Healthy Moisture)";
-    if (pct < 85.0f)  return "WET (Sufficient Moisture)";
-    return                   "WATERLOGGED / SUBMERGED";
+    if (pct < 15.0f)  return "VERY DRY";
+    if (pct < 35.0f)  return "DRY";
+    if (pct < 65.0f)  return "OPTIMAL";
+    if (pct < 85.0f)  return "WET";
+    return                   "WATERLOGGED";
 }
 
 // =====================================================================
@@ -123,7 +138,6 @@ float readSoilMoisture(int &outRawADC, float &outVoltage) {
         delay(2);
     }
 
-    // Sort to remove noise spikes (median filter)
     for (int i = 0; i < SAMPLES - 1; i++) {
         for (int j = i + 1; j < SAMPLES; j++) {
             if (buffer[i] > buffer[j]) {
@@ -134,7 +148,6 @@ float readSoilMoisture(int &outRawADC, float &outVoltage) {
         }
     }
 
-    // Average the middle 10 samples
     long sum = 0;
     for (int i = 10; i < 20; i++) {
         sum += buffer[i];
@@ -142,7 +155,6 @@ float readSoilMoisture(int &outRawADC, float &outVoltage) {
     outRawADC = sum / 10;
     outVoltage = (outRawADC / ADC_RESOLUTION) * VREF;
 
-    // Inverse mapping: High ADC = Dry, Low ADC = Wet
     float moisturePct = ((float)(AIR_VALUE - outRawADC) / (float)(AIR_VALUE - WATER_VALUE)) * 100.0f;
     return constrain(moisturePct, 0.0f, 100.0f);
 }
@@ -204,8 +216,7 @@ void sendTelemetry(float tC, float tF, float hum, float hi,
 
     int code = https.POST(p);
     if (code > 0) {
-        Serial.printf(" HTTP %d (Success)\n", code);
-        Serial.printf("         Payload: %s\n", p.c_str());
+        Serial.printf(" HTTP %d\n", code);
     } else {
         Serial.printf(" Failed: %s\n", https.errorToString(code).c_str());
     }
@@ -250,6 +261,14 @@ void setup() {
             Serial.println(F("OFFLINE! Check SDA=21, SCL=22, VCC=3.3V, ADDR=GND"));
         }
     }
+
+    // [COMMENTED] 4. HX711 Load Cell Initialization
+    // scale.begin(HX711_DOUT_PIN, HX711_SCK_PIN);
+    // if (scale.wait_ready_timeout(1000)) {
+    //     scale_available = true;
+    //     scale.set_scale(scale_calibration_factor);
+    //     scale.tare(10);
+    // }
 
     // 4. Connect WiFi
     Serial.print(F("  [..] WiFi Connecting"));
@@ -307,6 +326,10 @@ void loop() {
     float soilMoisturePct = readSoilMoisture(soilADC, soilVoltage);
     const char* soilStatus = getSoilStatus(soilMoisturePct);
 
+    // [COMMENTED] 4. Read HX711 5kg Weight Sensor
+    // long rawWeightADC = 0;
+    // float weightGrams = readWeight(rawWeightADC);
+
     // =============================================================
     //  Professional Serial Dashboard
     // =============================================================
@@ -335,7 +358,7 @@ void loop() {
     printLine();
     if (bh1750_available) {
         Serial.printf("    Illuminance  :  %8.1f lx   [%s]\n", lux, lightStatus);
-        Serial.printf("    Raw Sensor   :  %8.1f lx   (Calibrated to Master: x%.4f)\n", rawLux, LIGHT_CAL_FACTOR);
+        Serial.printf("    Raw Sensor   :  %8.1f lx   (Calibrated: x%.4f)\n", rawLux, LIGHT_CAL_FACTOR);
         int lightBars = min((int)(lux / 200.0f), 30);
         Serial.print(F("    Light Bar    :  ["));
         for (int i = 0; i < lightBars; i++) Serial.print('#');
