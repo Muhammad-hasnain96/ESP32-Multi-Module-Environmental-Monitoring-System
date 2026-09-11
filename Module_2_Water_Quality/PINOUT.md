@@ -1,4 +1,4 @@
-﻿# 🌊 Module 2: Water Quality & Flow Monitoring System
+# 🌊 Module 2: Water Quality & Flow Monitoring System
 
 ## 📌 Sensor Pinout Table
 
@@ -13,6 +13,10 @@
 | **Water Flow Sensor** | `Signal` (Yellow) | **`GPIO 27`** | `5V (VIN)` | Hardware Interrupt (`FALLING` edge) — Flow rate & Liters |
 | (FS200A / YF-S201) | `VCC` (Red) | `5V (VIN)` | — | 5V Turbine Power |
 | | `GND` (Black) | `GND` | — | Common Ground |
+| **E-201-C BNC pH Sensor** | `Po` (Analog Signal) | **`GPIO 35`** | `5V (VIN)` | `ADC1_CH7` — 2-Point Calibrated pH (Water 1.16V / Vinegar 1.995V) |
+| (pH-4502C Module) | `VCC` | `5V (VIN)` | — | Power (Requires 5V for op-amp linear headroom) |
+| | `GND` (Power) | `GND` | — | Common Ground |
+| | `GND` (Analog) | `GND` | — | Analog probe ground reference |
 
 ---
 

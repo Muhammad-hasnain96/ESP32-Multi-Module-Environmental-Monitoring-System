@@ -1,10 +1,11 @@
-// =====================================================================
-// ESP32 — MODULE 2: Complete Water Quality & Flow Monitoring System
+﻿// =====================================================================
+// ESP32 — MODULE 2: Complete Water Quality, pH & Flow Monitoring System
 // =====================================================================
 // SENSOR WIRING:
 //   1. DHT11        : DATA   -> GPIO 4  (VCC -> 3.3V/5V, GND -> GND)
 //   2. Analog TDS   : AOUT   -> GPIO 34 (VCC -> 3.3V/5V, GND -> GND)
 //   3. Flow Sensor  : Signal -> GPIO 27 (VCC -> 5V VIN, GND -> GND)
+//   4. E-201-C pH   : Po     -> GPIO 35 (VCC -> 5V VIN, GND -> GND)
 // =====================================================================
 
 #include <Arduino.h>
@@ -31,7 +32,7 @@ DHT dht(DHTPIN, DHTTYPE);
 //  3. Water Flow Sensor Configuration (GPIO 27 - Interrupt)
 // =====================================================================
 #define FLOW_PIN         27
-const float FLOW_CAL_FACTOR = 7.5f; // Pulses per second per L/min (FS200A / YF-S201)
+const float FLOW_CAL_FACTOR  = 7.5f;   // Pulses per second per L/min
 const float PULSES_PER_LITER = 450.0f; // 7.5 * 60 = 450 pulses per liter
 
 volatile unsigned long flowPulseCount = 0;
@@ -40,6 +41,17 @@ float totalLiters = 0.0f;
 void IRAM_ATTR flowPulseISR() {
     flowPulseCount++;
 }
+
+// =====================================================================
+//  4. E-201-C BNC pH Sensor Configuration (GPIO 35 - ADC1_CH7)
+// =====================================================================
+#define PH_PIN           35
+
+// 2-Point Calibrated Constants:
+// Neutral Water: 1.160V -> pH 7.00
+// Vinegar:       1.995V -> pH 2.80
+const float PH_NEUTRAL_V = 1.160f;
+const float PH_SLOPE     = 5.03f; // (7.0 - 2.8) / (1.995 - 1.160) = 5.03 pH/V
 
 // =====================================================================
 //  WiFi & ThingsBoard Configuration
@@ -91,20 +103,27 @@ const char* getFlowStatus(float flowRate) {
     return                        "HIGH FLOW (Strong Stream)";
 }
 
+const char* getPhStatus(float ph) {
+    if (ph <  3.0f) return "STRONGLY ACIDIC (Hazardous / Acid)";
+    if (ph <  6.5f) return "ACIDIC (Low pH / Corrosive)";
+    if (ph <= 7.5f) return "NEUTRAL (Ideal Drinking / Potable Water)";
+    if (ph <= 8.5f) return "MILDLY ALKALINE (Safe / Mineral-Rich)";
+    if (ph <= 11.0f) return "ALKALINE (Basic / Soapy)";
+    return                 "STRONGLY ALKALINE (Hazardous / Caustic)";
+}
+
 // =====================================================================
-//  Analog TDS Reader with Median Filtering & Temperature Compensation
+//  Analog TDS Reader (30-Sample Median Noise Filter + Temp Compensation)
 // =====================================================================
 float readTDS(float currentTempC, float &outVoltage) {
     const int SAMPLES = 30;
     int buffer[SAMPLES];
 
-    // Collect analog samples
     for (int i = 0; i < SAMPLES; i++) {
         buffer[i] = analogRead(TDS_PIN);
         delay(2);
     }
 
-    // Sort buffer to find median (filters out noise spikes)
     for (int i = 0; i < SAMPLES - 1; i++) {
         for (int j = i + 1; j < SAMPLES; j++) {
             if (buffer[i] > buffer[j]) {
@@ -115,32 +134,59 @@ float readTDS(float currentTempC, float &outVoltage) {
         }
     }
 
-    // Average the middle 10 samples
     long sum = 0;
     for (int i = 10; i < 20; i++) {
         sum += buffer[i];
     }
     float avgAdc = sum / 10.0f;
-
-    // Convert ADC to Voltage
     outVoltage = (avgAdc / ADC_RESOLUTION) * VREF;
 
-    // If probe is dry in air or disconnected
     if (outVoltage < 0.03f) {
         return 0.0f;
     }
 
-    // Temperature compensation (default to 25.0°C if sensor temp is invalid)
     float temp = (currentTempC > 0 && currentTempC < 80) ? currentTempC : 25.0f;
     float tempCoeff = 1.0f + 0.02f * (temp - 25.0f);
     float compVoltage = outVoltage / tempCoeff;
 
-    // Standard Gravity TDS polynomial formula
     float tdsValue = (133.42f * compVoltage * compVoltage * compVoltage
                     - 255.86f * compVoltage * compVoltage
                     + 857.39f * compVoltage) * 0.5f;
 
     return max(tdsValue, 0.0f);
+}
+
+// =====================================================================
+//  Analog pH Reader (30-Sample Median Noise Filter)
+// =====================================================================
+float readPH(float &outVoltage, int &outRawADC) {
+    const int SAMPLES = 30;
+    int buffer[SAMPLES];
+
+    for (int i = 0; i < SAMPLES; i++) {
+        buffer[i] = analogRead(PH_PIN);
+        delay(2);
+    }
+
+    for (int i = 0; i < SAMPLES - 1; i++) {
+        for (int j = i + 1; j < SAMPLES; j++) {
+            if (buffer[i] > buffer[j]) {
+                int temp = buffer[i];
+                buffer[i] = buffer[j];
+                buffer[j] = temp;
+            }
+        }
+    }
+
+    long sum = 0;
+    for (int i = 10; i < 20; i++) {
+        sum += buffer[i];
+    }
+    outRawADC = (int)(sum / 10);
+    outVoltage = (outRawADC / ADC_RESOLUTION) * VREF;
+
+    float calculatedPH = 7.0f - (outVoltage - PH_NEUTRAL_V) * PH_SLOPE;
+    return constrain(calculatedPH, 0.0f, 14.0f);
 }
 
 // =====================================================================
@@ -159,12 +205,13 @@ void connectWiFi() {
 }
 
 // =====================================================================
-//  ThingsBoard Telemetry Dispatch (Module 2: 12 Parameters)
+//  ThingsBoard Telemetry Dispatch (Module 2: Complete Telemetry Keys)
 // =====================================================================
 void sendTelemetry(float tC, float tF, float hum, float hi,
                    float tds, float tdsV, const char* quality,
                    float flowRateLMin, float flowRateMLSec, float flowHz,
-                   float volTotal, unsigned long pulses, const char* flowStatus) {
+                   float volTotal, unsigned long pulses, const char* flowStatus,
+                   float ph, float phV, const char* phStatus) {
     if (WiFi.status() != WL_CONNECTED) {
         Serial.println(F(" Skipped (WiFi offline)"));
         return;
@@ -178,34 +225,41 @@ void sendTelemetry(float tC, float tF, float hum, float hi,
     }
     https.addHeader("Content-Type", "application/json");
     
-    // JSON Payload for Module 2
+    // JSON Payload (With all aliases for versatile widget compatibility)
     String p = "{";
-    // DHT11 (Standard Keys + M2 Specific Keys so both widget types work)
+    // DHT11
     p += "\"temperature\":"        + String(tC, 1);
     p += ",\"temperatureF\":"      + String(tF, 1);
     p += ",\"humidity\":"          + String(hum, 1);
     p += ",\"heatIndex\":"         + String(hi, 1);
     p += ",\"m2_temperature\":"    + String(tC, 1);
-    p += ",\"m2_temperatureF\":"  + String(tF, 1);
-    p += ",\"m2_humidity\":"      + String(hum, 1);
-    p += ",\"m2_heatIndex\":"     + String(hi, 1);
+    p += ",\"m2_humidity\":"       + String(hum, 1);
     // TDS Meter
     p += ",\"tdsPPM\":"            + String(tds, 1);
+    p += ",\"tdsValue\":"          + String(tds, 1);
     p += ",\"tdsVoltage\":"        + String(tdsV, 3);
     p += ",\"waterQuality\":\""     + String(quality) + "\"";
+    p += ",\"tdsStatus\":\""       + String(quality) + "\"";
     // Flow Sensor
     p += ",\"flowRateLMin\":"      + String(flowRateLMin, 2);
+    p += ",\"flowRate\":"          + String(flowRateLMin, 2);
     p += ",\"flowRateMLSec\":"     + String(flowRateMLSec, 1);
     p += ",\"flowFrequencyHz\":"   + String(flowHz, 2);
     p += ",\"totalVolumeLiters\":" + String(volTotal, 3);
+    p += ",\"totalLitres\":"       + String(volTotal, 3);
     p += ",\"flowPulses\":"        + String(pulses);
     p += ",\"flowStatus\":\""       + String(flowStatus) + "\"";
+    // pH Sensor
+    p += ",\"phValue\":"           + String(ph, 2);
+    p += ",\"phVoltage\":"         + String(phV, 3);
+    p += ",\"phStatus\":\""        + String(phStatus) + "\"";
+    p += ",\"m2_phValue\":"        + String(ph, 2);
+    p += ",\"m2_phStatus\":\""     + String(phStatus) + "\"";
     p += "}";
 
     int code = https.POST(p);
     if (code > 0) {
-        Serial.printf(" HTTP %d (Success)\n", code);
-        Serial.printf("         Payload: %s\n", p.c_str());
+        Serial.printf(" HTTP %d\n", code);
     } else {
         Serial.printf(" Failed: %s\n", https.errorToString(code).c_str());
     }
@@ -219,29 +273,35 @@ void setup() {
     Serial.begin(115200);
     delay(1000);
 
+    analogReadResolution(12);
+    analogSetAttenuation(ADC_11db); // Full range 0 - 3.3V
+
     printLine('=');
-    Serial.println(F("  ESP32 — MODULE 2: COMPLETE WATER QUALITY & FLOW MONITOR"));
+    Serial.println(F("  ESP32 — MODULE 2: WATER QUALITY, pH & FLOW MONITOR"));
     printLine('=');
-    Serial.println(F("  Sensors: DHT11 (GPIO 4) | TDS (GPIO 34) | Flow (GPIO 27)"));
+    Serial.println(F("  Sensors: DHT11 (GPIO 4) | TDS (GPIO 34)"));
+    Serial.println(F("           Flow (GPIO 27) | E-201-C pH (GPIO 35)"));
     Serial.println(F("  Cloud  : ThingsBoard"));
     printLine('=');
 
-    // 1. Configure TDS ADC
-    analogReadResolution(12);
-    analogSetAttenuation(ADC_11db); // 0 - 3.3V range
+    // 1. TDS ADC
     pinMode(TDS_PIN, INPUT);
-    Serial.println(F("  [OK] TDS Meter Initialized on GPIO 34 (ADC1_CH6)"));
+    Serial.println(F("  [OK] TDS Meter        -> GPIO 34 (ADC1_CH6)"));
 
-    // 2. Initialize DHT11
+    // 2. pH ADC
+    pinMode(PH_PIN, INPUT);
+    Serial.println(F("  [OK] E-201-C pH Meter -> GPIO 35 (ADC1_CH7)"));
+
+    // 3. DHT11
     dht.begin();
-    Serial.println(F("  [OK] DHT11 Initialized on GPIO 4"));
+    Serial.println(F("  [OK] DHT11            -> GPIO 4"));
 
-    // 3. Configure Flow Sensor Interrupt
+    // 4. Flow Sensor Interrupt
     pinMode(FLOW_PIN, INPUT_PULLUP);
     attachInterrupt(digitalPinToInterrupt(FLOW_PIN), flowPulseISR, FALLING);
-    Serial.println(F("  [OK] Water Flow Sensor Initialized on GPIO 27 (Interrupt)"));
+    Serial.println(F("  [OK] Water Flow Sensor -> GPIO 27 (Interrupt)"));
 
-    // 4. Connect WiFi
+    // 5. WiFi
     Serial.print(F("  [..] WiFi Connecting"));
     connectWiFi();
 
@@ -262,7 +322,7 @@ void loop() {
     loopCount++;
 
     // -------------------------------------------------------------
-    // 1. Process Water Flow Sensor (Atomic Read)
+    // 1. Water Flow Sensor (Atomic Read)
     // -------------------------------------------------------------
     noInterrupts();
     unsigned long pulses = flowPulseCount;
@@ -277,7 +337,7 @@ void loop() {
     const char* flowStatus = getFlowStatus(flowRateLMin);
 
     // -------------------------------------------------------------
-    // 2. Read DHT11
+    // 2. DHT11 Read
     // -------------------------------------------------------------
     float hum  = dht.readHumidity();
     float tC   = dht.readTemperature();
@@ -291,11 +351,19 @@ void loop() {
     float hi = dht.computeHeatIndex(tC, hum, false);
 
     // -------------------------------------------------------------
-    // 3. Read TDS Sensor (with live DHT11 temperature compensation)
+    // 3. TDS Sensor (with live DHT11 temperature compensation)
     // -------------------------------------------------------------
     float tdsVoltage = 0.0f;
     float tdsPPM = readTDS(tC, tdsVoltage);
     const char* qualityStr = getWaterQuality(tdsPPM);
+
+    // -------------------------------------------------------------
+    // 4. E-201-C pH Sensor
+    // -------------------------------------------------------------
+    float phVoltage = 0.0f;
+    int   phRawADC = 0;
+    float phValue = readPH(phVoltage, phRawADC);
+    const char* phStatus = getPhStatus(phValue);
 
     // =============================================================
     //  Professional Serial Dashboard
@@ -322,40 +390,33 @@ void loop() {
     // Section 2: TDS Water Quality
     Serial.println(F("  WATER QUALITY  [Analog TDS Meter - GPIO 34]"));
     printLine();
-    Serial.printf("    TDS Value    :  %6.1f ppm\n", tdsPPM);
+    Serial.printf("    TDS Value    :  %6.1f ppm   [%s]\n", tdsPPM, qualityStr);
     Serial.printf("    Sensor Volt  :  %6.3f V\n", tdsVoltage);
-    Serial.printf("    Water Rating :  %s\n", qualityStr);
-    
-    // TDS Visual Bar (each # = 20 ppm, max 25 chars)
-    int tdsBars = min((int)(tdsPPM / 20.0f), 25);
-    Serial.print(F("    TDS Bar      :  ["));
-    for (int i = 0; i < tdsBars; i++)  Serial.print('#');
-    for (int i = tdsBars; i < 25; i++) Serial.print(' ');
-    Serial.printf("] %.0f ppm\n", tdsPPM);
     printLine();
 
-    // Section 3: Water Flow Sensor
+    // Section 3: pH Measurement
+    Serial.println(F("  WATER pH LEVEL  [E-201-C BNC - GPIO 35]"));
+    printLine();
+    Serial.printf("    pH Value     :  %6.2f       [%s]\n", phValue, phStatus);
+    Serial.printf("    Sensor Volt  :  %6.3f V    (Raw ADC: %4d)\n", phVoltage, phRawADC);
+    printLine();
+
+    // Section 4: Water Flow Sensor
     Serial.println(F("  WATER FLOW MONITOR  [FS200A / YF-S201 - GPIO 27]"));
     printLine();
     Serial.printf("    Flow Rate    :  %6.2f L/min   (%5.1f mL/sec)\n", flowRateLMin, flowRateMLSec);
     Serial.printf("    Frequency    :  %6.2f Hz      (%lu pulses in 3s)\n", flowHz, pulses);
     Serial.printf("    Total Volume :  %6.3f Liters\n", totalLiters);
     Serial.printf("    Flow Status  :  %s\n", flowStatus);
-
-    // Flow Visual Bar (each # = 0.5 L/min, max 20 chars)
-    int flowBars = min((int)(flowRateLMin / 0.5f), 20);
-    Serial.print(F("    Flow Bar     :  ["));
-    for (int i = 0; i < flowBars; i++)  Serial.print('#');
-    for (int i = flowBars; i < 20; i++) Serial.print(' ');
-    Serial.printf("] %.2f L/m\n", flowRateLMin);
     printLine();
 
-    // Section 4: Cloud Telemetry
-    Serial.print(F("  CLOUD -> ThingsBoard Telemetry (12 keys) ..."));
+    // Section 5: Cloud Telemetry
+    Serial.print(F("  CLOUD -> ThingsBoard Telemetry (All Keys) ..."));
     sendTelemetry(tC, tF, hum, hi,
                   tdsPPM, tdsVoltage, qualityStr,
                   flowRateLMin, flowRateMLSec, flowHz,
-                  totalLiters, pulses, flowStatus);
+                  totalLiters, pulses, flowStatus,
+                  phValue, phVoltage, phStatus);
 
     printLine('=');
 }
