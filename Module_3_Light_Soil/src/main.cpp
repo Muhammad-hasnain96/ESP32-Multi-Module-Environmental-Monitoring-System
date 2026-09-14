@@ -105,13 +105,13 @@ void printLine(char c = '-') {
     Serial.println();
 }
 
-// Light Status Classification
+// Light Status Classification (Concise)
 const char* getLightStatus(float lux) {
-    if (lux < 1.0f)     return "DARK (Night)";
-    if (lux < 50.0f)    return "DIM (Low Indoor)";
-    if (lux < 200.0f)   return "MODERATE (Indoor Normal)";
-    if (lux < 500.0f)   return "BRIGHT (Office / Well Lit)";
-    if (lux < 1000.0f)  return "VERY BRIGHT (Near Window)";
+    if (lux < 1.0f)     return "DARK";
+    if (lux < 50.0f)    return "DIM";
+    if (lux < 200.0f)   return "MODERATE";
+    if (lux < 500.0f)   return "BRIGHT";
+    if (lux < 1000.0f)  return "VERY BRIGHT";
     if (lux < 10000.0f) return "OUTDOOR SHADE";
     if (lux < 30000.0f) return "CLOUDY OUTDOOR";
     return                     "DIRECT SUNLIGHT";
@@ -193,15 +193,13 @@ void sendTelemetry(float tC, float tF, float hum, float hi,
     }
     https.addHeader("Content-Type", "application/json");
 
-    // JSON Payload
+    // JSON Payload — Dedicated Module 3 keys (Never overwrites Module 1)
     String p = "{";
-    // DHT11 Ambient
-    p += "\"temperature\":"    + String(tC, 1);
-    p += ",\"temperatureF\":"  + String(tF, 1);
-    p += ",\"humidity\":"      + String(hum, 1);
-    p += ",\"heatIndex\":"     + String(hi, 1);
-    p += ",\"m3_temperature\":" + String(tC, 1);
-    p += ",\"m3_humidity\":"   + String(hum, 1);
+    // DHT11 Ambient for Module 3
+    p += "\"m3_temperature\":"   + String(tC, 1);
+    p += ",\"m3_temperatureF\":" + String(tF, 1);
+    p += ",\"m3_humidity\":"     + String(hum, 1);
+    p += ",\"m3_heatIndex\":"    + String(hi, 1);
     // BH1750 Light
     p += ",\"lux\":"           + String(lux, 1);
     p += ",\"lightLevel\":\""   + String(lightLv) + "\"";
