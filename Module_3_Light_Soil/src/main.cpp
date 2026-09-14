@@ -1,4 +1,4 @@
-﻿// =====================================================================
+// =====================================================================
 // ESP32 — MODULE 3: Light, Soil & Environmental System
 // =====================================================================
 // SENSOR WIRING:
@@ -44,10 +44,10 @@
 DHT dht(DHTPIN, DHTTYPE);
 
 // =====================================================================
-//  2. BH1750 Configuration (I2C: SDA=21, SCL=22)
+//  2. BH1750 Configuration (Wire1: SDA=21, SCL=22)
 // =====================================================================
-#define I2C_SDA_PIN  21
-#define I2C_SCL_PIN  22
+#define BH1750_SDA_PIN  21
+#define BH1750_SCL_PIN  22
 BH1750 lightMeter(0x23);
 bool bh1750_available = false;
 float currentLux = 0.0f;
@@ -67,8 +67,10 @@ const int AIR_VALUE   = 3000; // Dry air (0% moisture)
 const int WATER_VALUE = 1350; // Pure water (100% moisture)
 
 // =====================================================================
-//  4. 2004 Character LCD (I2C: SDA=21, SCL=22, Auto-Detect 0x27 / 0x3F)
+//  4. 2004 Character LCD (Dedicated Wire: SDA=19, SCL=18)
 // =====================================================================
+#define LCD_SDA_PIN      19
+#define LCD_SCL_PIN      18
 LiquidCrystal_I2C lcd(0x27, 20, 4);
 bool lcd_available = false;
 
@@ -252,23 +254,9 @@ void setup() {
     pinMode(SOIL_PIN, INPUT);
     Serial.println(F("  [OK] Soil Moisture Sensor on GPIO 34 (ADC1_CH6)"));
 
-    // 3. Initialize I2C and BH1750
-    Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
-    Serial.print(F("  [..] BH1750 Light Sensor on I2C (0x23)... "));
-    if (lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, 0x23, &Wire)) {
-        bh1750_available = true;
-        Serial.println(F("ONLINE [OK]"));
-    } else {
-        if (lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, 0x5C, &Wire)) {
-            bh1750_available = true;
-            Serial.println(F("ONLINE at 0x5C [OK]"));
-        } else {
-            Serial.println(F("OFFLINE! Check SDA=21, SCL=22, VCC=3.3V, ADDR=GND"));
-        }
-    }
-
-    // 4. Initialize 2004 I2C LCD Display (Auto-Detect 0x27 or 0x3F)
-    Serial.print(F("  [..] 2004 I2C LCD Display (SDA=21, SCL=22)... "));
+    // 3. Initialize 2004 I2C LCD on Dedicated Wire (SDA=19, SCL=18)
+    Wire.begin(LCD_SDA_PIN, LCD_SCL_PIN);
+    Serial.print(F("  [..] 2004 I2C LCD on Wire (SDA=19, SCL=18)... "));
     byte lcdAddr = 0;
     Wire.beginTransmission(0x27);
     if (Wire.endTransmission() == 0) {
@@ -293,7 +281,20 @@ void setup() {
         lcd_available = true;
         Serial.printf("ONLINE at 0x%02X [OK]\n", lcdAddr);
     } else {
-        Serial.println(F("OFFLINE (Check SDA=21, SCL=22, VCC=5V, GND)"));
+        Serial.println(F("OFFLINE (Check SDA=19, SCL=18, VCC=5V, GND)"));
+    }
+
+    // 4. Initialize BH1750 on Wire1 (SDA=21, SCL=22)
+    Wire1.begin(BH1750_SDA_PIN, BH1750_SCL_PIN);
+    Serial.print(F("  [..] BH1750 Light Sensor on Wire1 (SDA=21, SCL=22)... "));
+    if (lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, 0x23, &Wire1)) {
+        bh1750_available = true;
+        Serial.println(F("ONLINE [OK]"));
+    } else if (lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, 0x5C, &Wire1)) {
+        bh1750_available = true;
+        Serial.println(F("ONLINE at 0x5C [OK]"));
+    } else {
+        Serial.println(F("OFFLINE! Check SDA=21, SCL=22, VCC=3.3V, ADDR=GND"));
     }
 
     // [COMMENTED] HX711 Load Cell Initialization
