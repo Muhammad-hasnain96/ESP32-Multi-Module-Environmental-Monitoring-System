@@ -30,6 +30,7 @@
 #include <Wire.h>
 #include <DHT.h>
 #include <BH1750.h>
+#include <LiquidCrystal_I2C.h>
 // #include "HX711.h"
 #include <WiFi.h>
 #include <HTTPClient.h>
@@ -66,7 +67,13 @@ const int AIR_VALUE   = 3000; // Dry air (0% moisture)
 const int WATER_VALUE = 1350; // Pure water (100% moisture)
 
 // =====================================================================
-//  [COMMENTED] 4. HX711 Load Cell Configuration
+//  4. 2004 Character LCD (I2C: SDA=21, SCL=22, Auto-Detect 0x27 / 0x3F)
+// =====================================================================
+LiquidCrystal_I2C lcd(0x27, 20, 4);
+bool lcd_available = false;
+
+// =====================================================================
+//  [COMMENTED] HX711 Load Cell Configuration
 // =====================================================================
 // #define HX711_DOUT_PIN  14
 // #define HX711_SCK_PIN   12
@@ -260,7 +267,36 @@ void setup() {
         }
     }
 
-    // [COMMENTED] 4. HX711 Load Cell Initialization
+    // 4. Initialize 2004 I2C LCD Display (Auto-Detect 0x27 or 0x3F)
+    Serial.print(F("  [..] 2004 I2C LCD Display (SDA=21, SCL=22)... "));
+    byte lcdAddr = 0;
+    Wire.beginTransmission(0x27);
+    if (Wire.endTransmission() == 0) {
+        lcdAddr = 0x27;
+    } else {
+        Wire.beginTransmission(0x3F);
+        if (Wire.endTransmission() == 0) lcdAddr = 0x3F;
+    }
+    if (lcdAddr != 0) {
+        lcd = LiquidCrystal_I2C(lcdAddr, 20, 4);
+        lcd.init();
+        lcd.backlight();
+        lcd.clear();
+        lcd.setCursor(0, 0);
+        lcd.print(F("ESP32 MONITOR SYSTEM"));
+        lcd.setCursor(0, 1);
+        lcd.print(F("MODULE 3: LIGHT&SOIL"));
+        lcd.setCursor(0, 2);
+        lcd.print(F("WiFi Connecting...  "));
+        lcd.setCursor(0, 3);
+        lcd.print(F("Please wait...      "));
+        lcd_available = true;
+        Serial.printf("ONLINE at 0x%02X [OK]\n", lcdAddr);
+    } else {
+        Serial.println(F("OFFLINE (Check SDA=21, SCL=22, VCC=5V, GND)"));
+    }
+
+    // [COMMENTED] HX711 Load Cell Initialization
     // scale.begin(HX711_DOUT_PIN, HX711_SCK_PIN);
     // if (scale.wait_ready_timeout(1000)) {
     //     scale_available = true;
@@ -268,9 +304,20 @@ void setup() {
     //     scale.tare(10);
     // }
 
-    // 4. Connect WiFi
+    // 5. Connect WiFi
     Serial.print(F("  [..] WiFi Connecting"));
     connectWiFi();
+
+    if (lcd_available) {
+        lcd.setCursor(0, 2);
+        if (WiFi.status() == WL_CONNECTED) {
+            lcd.print(F("WiFi: Connected!    "));
+        } else {
+            lcd.print(F("WiFi: Offline       "));
+        }
+        delay(1000);
+        lcd.clear();
+    }
 
     printLine('=');
     Serial.println();
@@ -386,4 +433,35 @@ void loop() {
     sendTelemetry(tC, tF, hum, hi, lux, lightStatus, soilMoisturePct, soilVoltage, soilADC, soilStatus);
 
     printLine('=');
+
+    // -------------------------------------------------------------
+    // 5. Update 2004 Character LCD Display (Live Screen)
+    // -------------------------------------------------------------
+    if (lcd_available) {
+        char buf[21];
+
+        // Row 0: Temperature & Humidity
+        snprintf(buf, sizeof(buf), "T:%4.1fC   H:%4.1f%%   ", tC, hum);
+        lcd.setCursor(0, 0);
+        lcd.print(buf);
+
+        // Row 1: Ambient Light (Lux) & Status
+        snprintf(buf, sizeof(buf), "L:%5.0flx [%-8s] ", lux, lightStatus);
+        lcd.setCursor(0, 1);
+        lcd.print(buf);
+
+        // Row 2: Soil Moisture (%) & Status
+        snprintf(buf, sizeof(buf), "Soil:%4.1f%% [%-7s]", soilMoisturePct, soilStatus);
+        lcd.setCursor(0, 2);
+        lcd.print(buf);
+
+        // Row 3: WiFi Status & Uptime
+        if (WiFi.status() == WL_CONNECTED) {
+            snprintf(buf, sizeof(buf), "WiFi:OK   Up:%s", uptime().c_str());
+        } else {
+            snprintf(buf, sizeof(buf), "WiFi: Offline       ");
+        }
+        lcd.setCursor(0, 3);
+        lcd.print(buf);
+    }
 }

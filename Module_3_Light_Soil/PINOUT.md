@@ -1,4 +1,4 @@
-﻿# 🌿 Module 3: Light, Soil Moisture & Environmental System
+# 🌿 Module 3: Light, Soil Moisture & Environmental System
 
 ## 📌 Sensor Pinout Table
 
@@ -14,6 +14,10 @@
 | | `GND` | `GND` | — | Ground |
 | **Capacitive Soil v2.0** | `AOUT` (Signal) | **`GPIO 34`** | `3.3V` | `ADC1_CH6` — Analog moisture level (0%–100%) |
 | | `VCC` | `3.3V` | — | Direct 3.3V linearity |
+| | `GND` | `GND` | — | Common Ground |
+| **2004 I2C LCD Display** | `SDA` | **`GPIO 21`** | `5V (VIN)` | Shared I2C Data bus (Address `0x27` / `0x3F`) |
+| (20x4 Character Screen) | `SCL` | **`GPIO 22`** | — | Shared I2C Clock bus |
+| | `VCC` | `5V (VIN)` | — | Power (5V required for crisp contrast & backlight) |
 | | `GND` | `GND` | — | Common Ground |
 
 ---
