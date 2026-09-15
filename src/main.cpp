@@ -54,8 +54,6 @@ void IRAM_ATTR flowISR() { flowPulses++; }
 // =====================================================================
 Adafruit_CCS811 ccs;
 bool    ccsOK    = false;
-const float CO2_CAL_FACTOR = 0.7313f; // Calibrated to master CO2 reference (430 ppm room air / 588 ppm raw)
-uint16_t ccsRawECO2 = 400;
 uint16_t ccsECO2 = 400, ccsTVOC = 0;
 
 // =====================================================================
@@ -355,8 +353,7 @@ void loop() {
     if (ccsOK) {
         ccs.setEnvironmentalData(hum, tC);
         if (ccs.available() && !ccs.readData()) {
-            ccsRawECO2 = ccs.geteCO2();
-            ccsECO2 = (uint16_t)(ccsRawECO2 * CO2_CAL_FACTOR);
+            ccsECO2 = ccs.geteCO2();
             ccsTVOC = ccs.getTVOC();
         }
     }
@@ -407,8 +404,6 @@ void loop() {
     if (ccsOK) {
         Serial.printf("    eCO2         :  %5u ppm   [%s]\n",
                       ccsECO2, co2Label(ccsECO2));
-        Serial.printf("    Raw Sensor   :  %5u ppm   (Calibrated: x%.4f)\n",
-                      ccsRawECO2, CO2_CAL_FACTOR);
         Serial.printf("    TVOC         :  %5u ppb   [%s]\n",
                       ccsTVOC, tvocLabel(ccsTVOC));
     } else {
