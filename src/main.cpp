@@ -351,6 +351,22 @@ void setup() {
         lcd.init();
         lcd.backlight();
         lcd.clear();
+
+        // 🌟 Welcome Splash Screen
+        lcd.setCursor(0, 0);
+        lcd.print(F("===================="));
+        lcd.setCursor(0, 1);
+        lcd.print(F("    Welcome to      "));
+        lcd.setCursor(0, 2);
+        lcd.print(F("     Module-2       "));
+        lcd.setCursor(0, 3);
+        lcd.print(F("===================="));
+        lcd_available = true;
+        Serial.printf("ONLINE at 0x%02X [OK]\n", lcdAddr);
+        delay(2500); // Show Welcome message clearly for 2.5 seconds
+
+        // System Initialization Status
+        lcd.clear();
         lcd.setCursor(0, 0);
         lcd.print(F("ESP32 MONITOR SYSTEM"));
         lcd.setCursor(0, 1);
@@ -359,8 +375,6 @@ void setup() {
         lcd.print(F("WiFi Connecting...  "));
         lcd.setCursor(0, 3);
         lcd.print(F("Please wait...      "));
-        lcd_available = true;
-        Serial.printf("ONLINE at 0x%02X [OK]\n", lcdAddr);
     } else {
         Serial.println(F("OFFLINE (Check SDA=19, SCL=18, VCC=5V, GND)"));
     }
@@ -376,7 +390,9 @@ void setup() {
         } else {
             lcd.print(F("WiFi: Offline       "));
         }
-        delay(1000);
+        lcd.setCursor(0, 3);
+        lcd.print(F("Starting System...  "));
+        delay(1200);
         lcd.clear();
     }
 
