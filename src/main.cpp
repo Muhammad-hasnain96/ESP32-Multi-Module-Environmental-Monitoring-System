@@ -77,7 +77,7 @@ const char* TB_TOKEN  = "52kqr3ax2flcp0gdy56s";
 // =====================================================================
 //  Timing & State Variables
 // =====================================================================
-const unsigned long INTERVAL = 3000UL; // 3 seconds interval
+const unsigned long INTERVAL = 4500UL; // 4.5 seconds interval (4 to 5 seconds between screen rotations)
 unsigned long lastLog = 0;
 unsigned long loopCount = 0;
 
@@ -496,7 +496,7 @@ void loop() {
     Serial.println(F("  WATER FLOW MONITOR  [FS200A / YF-S201 - GPIO 27]"));
     printLine();
     Serial.printf("    Flow Rate    :  %6.2f L/min   (%5.1f mL/sec)\n", flowRateLMin, flowRateMLSec);
-    Serial.printf("    Frequency    :  %6.2f Hz      (%lu pulses in 3s)\n", flowHz, pulses);
+    Serial.printf("    Frequency    :  %6.2f Hz      (%lu pulses in %1.1fs)\n", flowHz, pulses, elapsedSec);
     Serial.printf("    Total Volume :  %6.3f Liters\n", totalLiters);
     Serial.printf("    Flow Status  :  %s\n", flowStatus);
     printLine();
