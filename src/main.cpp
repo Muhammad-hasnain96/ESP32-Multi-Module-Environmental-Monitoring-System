@@ -1,90 +1,73 @@
+﻿// =====================================================================
+// ESP32 — MODULE 1: Air Quality, Gas, Flow & 2004 LCD System
 // =====================================================================
-// ESP32 — MODULE 3: Light, Soil & Environmental System
-// =====================================================================
-// SENSOR WIRING:
-//   1. DHT11 Sensor:
-//      - DATA  -> GPIO 4
-//      - VCC   -> 3.3V / 5V
-//      - GND   -> GND
-//
-//   2. BH1750 Digital Light Sensor:
-//      - SDA   -> GPIO 21
-//      - SCL   -> GPIO 22
-//      - ADDR  -> GND (Address: 0x23)
-//      - VCC   -> 3.3V
-//      - GND   -> GND
-//
-//   3. Capacitive Soil Moisture Sensor v2.0:
-//      - AOUT  -> GPIO 34 (ADC1_CH6 - Analog Input)
-//      - VCC   -> 3.3V
-//      - GND   -> GND
-//
-//   [COMMENTED / OPTIONAL] 4. HX711 5kg Load Cell:
-//      - DT    -> GPIO 14
-//      - SCK   -> GPIO 12
-//      - VCC   -> 5V (VIN)
-//      - GND   -> GND
+//  Sensor         GPIO / Interface    Measurement
+//  ------------   ----------------   --------------------------------
+//  DHT11          GPIO 4             Temperature, Humidity, HeatIndex
+//  MQ-137         GPIO 33 (AO)       Ammonia NH3 (ppm) [0.0 ppm baseline]
+//                 GPIO 25 (DO)       Threshold Alert
+//  FS200A         GPIO 27 (INT)      Air/Water Flow
+//  CCS811         Wire1: SDA=17      eCO2 (ppm), TVOC (ppb)
+//                        SCL=16
+//  2004 I2C LCD   Wire:  SDA=19      20x4 Real-time Local Display
+//                        SCL=18
 // =====================================================================
 
 #include <Arduino.h>
 #include <Wire.h>
+#include <SPI.h>
 #include <DHT.h>
-#include <BH1750.h>
-#include <LiquidCrystal_I2C.h>
-// #include "HX711.h"
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
+#include <Adafruit_CCS811.h>
+#include <LiquidCrystal_I2C.h>
 
 // =====================================================================
-//  1. DHT11 Configuration (GPIO 4)
+//  1. DHT11 — Temperature & Humidity (GPIO 4)
 // =====================================================================
 #define DHTPIN   4
 #define DHTTYPE  DHT11
 DHT dht(DHTPIN, DHTTYPE);
 
 // =====================================================================
-//  2. BH1750 Configuration (Wire1: SDA=21, SCL=22)
+//  2. MQ-137 — Ammonia Gas Sensor (GPIO 33 AO / GPIO 25 DO)
 // =====================================================================
-#define BH1750_SDA_PIN  21
-#define BH1750_SCL_PIN  22
-BH1750 lightMeter(0x23);
-bool bh1750_available = false;
-float currentLux = 0.0f;
-
-// Calibration factor: Master sensor = 202.5 lx / BH1750 raw = 277.1 lx
-const float LIGHT_CAL_FACTOR = 0.7308f;
+#define MQ137_AO  33
+#define MQ137_DO  25
+float   mq137Baseline   = 0.0f;
+bool    mq137Warmed     = false;
+unsigned long mq137WarmStart = 0;
+const unsigned long MQ137_WARMUP = 30000UL;
 
 // =====================================================================
-//  3. Capacitive Soil Moisture Sensor Configuration (GPIO 34)
+//  3. FS200A Flow Sensor (GPIO 27, Interrupt)
 // =====================================================================
-#define SOIL_PIN         34
-#define VREF             3.3f
-#define ADC_RESOLUTION   4095.0f
-
-// Calibration reference values (ADC 0-4095)
-const int AIR_VALUE   = 3000; // Dry air (0% moisture)
-const int WATER_VALUE = 1350; // Pure water (100% moisture)
+#define FLOW_PIN  27
+const float PULSES_PER_L = 7.5f;
+volatile unsigned long flowPulses = 0;
+float totalVolume = 0.0f;
+void IRAM_ATTR flowISR() { flowPulses++; }
 
 // =====================================================================
-//  4. 2004 Character LCD (Dedicated Wire: SDA=19, SCL=18)
+//  4. CCS811 — I2C Bus 1 (Wire1: SDA=17, SCL=16)
 // =====================================================================
-#define LCD_SDA_PIN      19
-#define LCD_SCL_PIN      18
+Adafruit_CCS811 ccs;
+bool    ccsOK    = false;
+const float CO2_CAL_FACTOR = 0.7313f; // Calibrated to master CO2 reference (430 ppm room air / 588 ppm raw)
+uint16_t ccsRawECO2 = 400;
+uint16_t ccsECO2 = 400, ccsTVOC = 0;
+
+// =====================================================================
+//  5. 2004 Character LCD (Wire: SDA=19, SCL=18, Auto-Detect 0x27 / 0x3F)
+// =====================================================================
+#define LCD_SDA_PIN  19
+#define LCD_SCL_PIN  18
 LiquidCrystal_I2C lcd(0x27, 20, 4);
 bool lcd_available = false;
 
 // =====================================================================
-//  [COMMENTED] HX711 Load Cell Configuration
-// =====================================================================
-// #define HX711_DOUT_PIN  14
-// #define HX711_SCK_PIN   12
-// HX711 scale;
-// bool scale_available = false;
-// float scale_calibration_factor = 420.0f;
-
-// =====================================================================
-//  WiFi & ThingsBoard Configuration
+//  WiFi & ThingsBoard
 // =====================================================================
 const char* WIFI_SSID = "Meeting Room";
 const char* WIFI_PASS = "Shahid786$$";
@@ -92,9 +75,9 @@ const char* TB_HOST   = "https://things.digitalm.cloud";
 const char* TB_TOKEN  = "52kqr3ax2flcp0gdy56s";
 
 // =====================================================================
-//  Timing & State Variables
+//  Timing
 // =====================================================================
-const unsigned long INTERVAL = 3000UL; // Read and send every 3 seconds
+const unsigned long INTERVAL = 3000UL;
 unsigned long lastLog = 0;
 unsigned long loopCount = 0;
 
@@ -109,67 +92,44 @@ String uptime() {
     return String(b);
 }
 
-void printLine(char c = '-') {
-    for (int i = 0; i < 62; i++) Serial.print(c);
-    Serial.println();
-}
-
-// Light Status Classification (Concise)
-const char* getLightStatus(float lux) {
-    if (lux < 1.0f)     return "DARK";
-    if (lux < 50.0f)    return "DIM";
-    if (lux < 200.0f)   return "MODERATE";
-    if (lux < 500.0f)   return "BRIGHT";
-    if (lux < 1000.0f)  return "VERY BRIGHT";
-    if (lux < 10000.0f) return "OUTDOOR SHADE";
-    if (lux < 30000.0f) return "CLOUDY OUTDOOR";
-    return                     "DIRECT SUNLIGHT";
-}
-
-// Soil Moisture Status Classification
-const char* getSoilStatus(float pct) {
-    if (pct < 15.0f)  return "VERY DRY";
-    if (pct < 35.0f)  return "DRY";
-    if (pct < 65.0f)  return "OPTIMAL";
-    if (pct < 85.0f)  return "WET";
-    return                   "WATERLOGGED";
-}
-
-// =====================================================================
-//  Capacitive Soil Sensor Reading with Multi-Sample Filter
-// =====================================================================
-float readSoilMoisture(int &outRawADC, float &outVoltage) {
-    const int SAMPLES = 30;
-    int buffer[SAMPLES];
-
-    for (int i = 0; i < SAMPLES; i++) {
-        buffer[i] = analogRead(SOIL_PIN);
-        delay(2);
-    }
-
-    for (int i = 0; i < SAMPLES - 1; i++) {
-        for (int j = i + 1; j < SAMPLES; j++) {
-            if (buffer[i] > buffer[j]) {
-                int temp = buffer[i];
-                buffer[i] = buffer[j];
-                buffer[j] = temp;
-            }
-        }
-    }
-
+int avgADC(int pin, int n = 10) {
     long sum = 0;
-    for (int i = 10; i < 20; i++) {
-        sum += buffer[i];
-    }
-    outRawADC = sum / 10;
-    outVoltage = (outRawADC / ADC_RESOLUTION) * VREF;
+    for (int i = 0; i < n; i++) { sum += analogRead(pin); delay(5); }
+    return (int)(sum / n);
+}
 
-    float moisturePct = ((float)(AIR_VALUE - outRawADC) / (float)(AIR_VALUE - WATER_VALUE)) * 100.0f;
-    return constrain(moisturePct, 0.0f, 100.0f);
+// Status Labels
+const char* nh3Label(float p, bool w) {
+    if (!w)         return "WARMING UP";
+    if (p <   5.0f) return "CLEAN";
+    if (p <  25.0f) return "LOW";
+    if (p <  50.0f) return "MODERATE";
+    if (p < 100.0f) return "HIGH";
+    return                  "DANGER";
+}
+const char* flowLabel(float hz) {
+    if (hz == 0)    return "NO FLOW";
+    if (hz < 5.0f)  return "VERY LOW";
+    if (hz < 15.0f) return "LOW";
+    if (hz < 35.0f) return "MODERATE";
+    return                  "HIGH";
+}
+const char* co2Label(uint16_t v) {
+    if (v <  600)   return "EXCELLENT";
+    if (v < 1000)   return "GOOD";
+    if (v < 1500)   return "MODERATE";
+    if (v < 2500)   return "POOR";
+    return                  "HAZARDOUS";
+}
+const char* tvocLabel(uint16_t v) {
+    if (v <  220)   return "LOW";
+    if (v <  660)   return "MODERATE";
+    if (v < 2200)   return "HIGH";
+    return                  "VERY HIGH";
 }
 
 // =====================================================================
-//  WiFi Connection
+//  WiFi
 // =====================================================================
 void connectWiFi() {
     if (WiFi.status() == WL_CONNECTED) return;
@@ -180,15 +140,47 @@ void connectWiFi() {
     while (WiFi.status() != WL_CONNECTED && n++ < 20) {
         delay(500); Serial.print('.');
     }
-    Serial.println(WiFi.status() == WL_CONNECTED ? " Connected!" : " Pending...");
+    Serial.println(WiFi.status() == WL_CONNECTED
+        ? " Connected!" : " Pending...");
 }
 
 // =====================================================================
-//  ThingsBoard Telemetry Dispatch (Module 3: 10 Keys)
+//  MQ-137 Read (0.0 ppm Baseline Calibration)
+// =====================================================================
+float readMQ137(float &V) {
+    int raw = avgADC(MQ137_AO);
+    V = (raw / 4095.0f) * 3.3f;
+    if (!mq137Warmed) {
+        if (millis() - mq137WarmStart >= MQ137_WARMUP) {
+            mq137Baseline = max(V, 0.10f);
+            mq137Warmed = true;
+        } else {
+            mq137Baseline = (mq137Baseline == 0) ? V
+                          : mq137Baseline * 0.95f + V * 0.05f;
+            return 0.0f;
+        }
+    }
+    if (V <= mq137Baseline) return 0.0f;
+    float r = (V - mq137Baseline) / (3.3f - mq137Baseline);
+    return constrain(r * 500.0f, 0.0f, 500.0f);
+}
+
+// =====================================================================
+//  CCS811 Init
+// =====================================================================
+bool initCCS() {
+    if (ccs.begin(0x5A, &Wire1)) { ccsOK = true; return true; }
+    if (ccs.begin(0x5B, &Wire1)) { ccsOK = true; return true; }
+    return false;
+}
+
+// =====================================================================
+//  ThingsBoard — send all 16 keys
 // =====================================================================
 void sendTelemetry(float tC, float tF, float hum, float hi,
-                   float lux, const char* lightLv,
-                   float soilPct, float soilV, int soilADC, const char* soilLv) {
+                   float nh3, const char* nh3Lv, float mq137V, bool alert,
+                   unsigned long pulses, float flowHz, float vol, const char* flowLv,
+                   uint16_t eco2, const char* co2Lv, uint16_t tvoc, const char* tvocLv) {
     if (WiFi.status() != WL_CONNECTED) {
         Serial.println(F(" Skipped (WiFi offline)"));
         return;
@@ -201,26 +193,24 @@ void sendTelemetry(float tC, float tF, float hum, float hi,
         return;
     }
     https.addHeader("Content-Type", "application/json");
-
-    // JSON Payload — Dedicated Module 3 keys (Never overwrites Module 1)
     String p = "{";
-    // DHT11 Ambient for Module 3
-    p += "\"m3_temperature\":"   + String(tC, 1);
-    p += ",\"m3_temperatureF\":" + String(tF, 1);
-    p += ",\"m3_humidity\":"     + String(hum, 1);
-    p += ",\"m3_heatIndex\":"    + String(hi, 1);
-    // BH1750 Light
-    p += ",\"lux\":"           + String(lux, 1);
-    p += ",\"lightLevel\":\""   + String(lightLv) + "\"";
-    // Soil Moisture
-    p += ",\"soilMoisture\":"  + String(soilPct, 1);
-    p += ",\"moisture\":"      + String(soilPct, 1);
-    p += ",\"soil_moisture\":" + String(soilPct, 1);
-    p += ",\"soilVoltage\":"   + String(soilV, 3);
-    p += ",\"soilRawADC\":"    + String(soilADC);
-    p += ",\"soilStatus\":\""   + String(soilLv) + "\"";
+    p += "\"temperature\":"    + String(tC, 1);
+    p += ",\"temperatureF\":"  + String(tF, 1);
+    p += ",\"humidity\":"      + String(hum, 1);
+    p += ",\"heatIndex\":"     + String(hi, 1);
+    p += ",\"nh3PPM\":"        + String(nh3, 1);
+    p += ",\"nh3Level\":\""    + String(nh3Lv) + "\"";
+    p += ",\"mq137V\":"        + String(mq137V, 3);
+    p += ",\"nh3Alert\":"      + String(alert ? 1 : 0);
+    p += ",\"flowPulses\":"    + String(pulses);
+    p += ",\"flowHz\":"        + String(flowHz, 2);
+    p += ",\"flowVolume\":"    + String(vol, 2);
+    p += ",\"flowStatus\":\""  + String(flowLv) + "\"";
+    p += ",\"eCO2\":"          + String(eco2);
+    p += ",\"eco2Status\":\""  + String(co2Lv) + "\"";
+    p += ",\"tvoc\":"          + String(tvoc);
+    p += ",\"tvocStatus\":\""  + String(tvocLv) + "\"";
     p += "}";
-
     int code = https.POST(p);
     if (code > 0) {
         Serial.printf(" HTTP %d\n", code);
@@ -231,6 +221,14 @@ void sendTelemetry(float tC, float tF, float hum, float hi,
 }
 
 // =====================================================================
+//  Print separator line (60 chars)
+// =====================================================================
+void printLine(char c = '-') {
+    for (int i = 0; i < 60; i++) Serial.print(c);
+    Serial.println();
+}
+
+// =====================================================================
 //  Setup
 // =====================================================================
 void setup() {
@@ -238,30 +236,39 @@ void setup() {
     delay(1000);
 
     printLine('=');
-    Serial.println(F("  ESP32 — MODULE 3: COMPLETE LIGHT, SOIL & ENVIRONMENT v1.1"));
+    Serial.println(F("  ESP32 MODULE 1: AIR QUALITY, GAS & 2004 LCD SYSTEM"));
     printLine('=');
-    Serial.println(F("  Sensors: DHT11 (GPIO 4) | BH1750 (GPIO 21/22) | Soil (GPIO 34)"));
+    Serial.println(F("  Sensors: DHT11 (GPIO 4) | MQ-137 (GPIO 33/25)"));
+    Serial.println(F("           FS200A (GPIO 27) | CCS811 (Wire1: SDA=17, SCL=16)"));
+    Serial.println(F("  Display: 2004 I2C LCD (Wire: SDA=19, SCL=18)"));
     Serial.println(F("  Cloud  : ThingsBoard"));
     printLine('=');
 
-    // 1. Initialize DHT11
-    dht.begin();
-    Serial.println(F("  [OK] DHT11 Initialized on GPIO 4"));
-
-    // 2. Initialize Soil Sensor ADC
     analogReadResolution(12);
-    analogSetAttenuation(ADC_11db); // 0 - 3.3V
-    pinMode(SOIL_PIN, INPUT);
-    Serial.println(F("  [OK] Soil Moisture Sensor on GPIO 34 (ADC1_CH6)"));
+    analogSetAttenuation(ADC_11db);
 
-    // 3. Initialize 2004 I2C LCD on Dedicated Wire (SDA=19, SCL=18)
+    // 1. DHT11
+    dht.begin();
+    Serial.println(F("  [OK] DHT11    -> GPIO 4"));
+
+    // 2. MQ-137
+    pinMode(MQ137_AO, INPUT);
+    pinMode(MQ137_DO, INPUT);
+    mq137WarmStart = millis();
+    Serial.println(F("  [OK] MQ-137   -> GPIO 33 (AO) / GPIO 25 (DO) [warming up...]"));
+
+    // 3. FS200A
+    pinMode(FLOW_PIN, INPUT_PULLUP);
+    attachInterrupt(digitalPinToInterrupt(FLOW_PIN), flowISR, FALLING);
+    Serial.println(F("  [OK] FS200A   -> GPIO 27 (Interrupt)"));
+
+    // 4. Initialize 2004 I2C LCD on Dedicated Wire (SDA=19, SCL=18)
     Wire.begin(LCD_SDA_PIN, LCD_SCL_PIN);
-    Serial.print(F("  [..] 2004 I2C LCD on Wire (SDA=19, SCL=18)... "));
+    Serial.print(F("  [..] 2004 I2C LCD (Dedicated SDA=19, SCL=18)... "));
     byte lcdAddr = 0;
     Wire.beginTransmission(0x27);
-    if (Wire.endTransmission() == 0) {
-        lcdAddr = 0x27;
-    } else {
+    if (Wire.endTransmission() == 0) lcdAddr = 0x27;
+    else {
         Wire.beginTransmission(0x3F);
         if (Wire.endTransmission() == 0) lcdAddr = 0x3F;
     }
@@ -273,7 +280,7 @@ void setup() {
         lcd.setCursor(0, 0);
         lcd.print(F("ESP32 MONITOR SYSTEM"));
         lcd.setCursor(0, 1);
-        lcd.print(F("MODULE 3: LIGHT&SOIL"));
+        lcd.print(F("MODULE 1: AIR QUALITY"));
         lcd.setCursor(0, 2);
         lcd.print(F("WiFi Connecting...  "));
         lcd.setCursor(0, 3);
@@ -284,29 +291,18 @@ void setup() {
         Serial.println(F("OFFLINE (Check SDA=19, SCL=18, VCC=5V, GND)"));
     }
 
-    // 4. Initialize BH1750 on Wire1 (SDA=21, SCL=22)
-    Wire1.begin(BH1750_SDA_PIN, BH1750_SCL_PIN);
-    Serial.print(F("  [..] BH1750 Light Sensor on Wire1 (SDA=21, SCL=22)... "));
-    if (lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, 0x23, &Wire1)) {
-        bh1750_available = true;
+    // 5. CCS811 on I2C Bus 1 (Wire1: SDA=17, SCL=16)
+    Wire1.begin(17, 16, 50000);
+    Wire1.setTimeOut(3000);
+    Serial.print(F("  [..] CCS811   -> Wire1 SDA=17 SCL=16 ... "));
+    if (initCCS()) {
         Serial.println(F("ONLINE [OK]"));
-    } else if (lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, 0x5C, &Wire1)) {
-        bh1750_available = true;
-        Serial.println(F("ONLINE at 0x5C [OK]"));
     } else {
-        Serial.println(F("OFFLINE! Check SDA=21, SCL=22, VCC=3.3V, ADDR=GND"));
+        Serial.println(F("OFFLINE - Check WAK->GND, RST->3.3V"));
     }
 
-    // [COMMENTED] HX711 Load Cell Initialization
-    // scale.begin(HX711_DOUT_PIN, HX711_SCK_PIN);
-    // if (scale.wait_ready_timeout(1000)) {
-    //     scale_available = true;
-    //     scale.set_scale(scale_calibration_factor);
-    //     scale.tare(10);
-    // }
-
-    // 5. Connect WiFi
-    Serial.print(F("  [..] WiFi Connecting"));
+    // 6. WiFi
+    Serial.print(F("  [..] WiFi     Connecting"));
     connectWiFi();
 
     if (lcd_available) {
@@ -325,140 +321,134 @@ void setup() {
 }
 
 // =====================================================================
-//  Main Loop
+//  Loop
 // =====================================================================
 void loop() {
     connectWiFi();
+    if (!ccsOK) initCCS();
 
     unsigned long now = millis();
     if (now - lastLog < INTERVAL) { delay(50); return; }
     lastLog = now;
     loopCount++;
 
-    // -------------------------------------------------------------
-    // 1. Read DHT11 Temperature & Humidity
-    // -------------------------------------------------------------
+    // ---- 1. FS200A ----
+    noInterrupts();
+    unsigned long pulses = flowPulses; flowPulses = 0;
+    interrupts();
+    float flowHz  = pulses / (INTERVAL / 1000.0f);
+    totalVolume  += pulses / PULSES_PER_L;
+
+    // ---- 2. DHT11 ----
     float hum  = dht.readHumidity();
     float tC   = dht.readTemperature();
     float tF   = dht.readTemperature(true);
-    bool  dhtOK = true;
+    if (isnan(hum) || isnan(tC)) { hum = 50; tC = 25; tF = 77; }
+    float hi   = dht.computeHeatIndex(tC, hum, false);
 
-    if (isnan(hum) || isnan(tC)) {
-        hum = 50.0f; tC = 25.0f; tF = 77.0f;
-        dhtOK = false;
-    }
-    float hi = dht.computeHeatIndex(tC, hum, false);
+    // ---- 3. MQ-137 ----
+    float mq137V = 0;
+    float nh3    = readMQ137(mq137V);
+    bool  alert  = (digitalRead(MQ137_DO) == LOW);
 
-    // -------------------------------------------------------------
-    // 2. Read BH1750 Light Sensor (with Master Calibration)
-    // -------------------------------------------------------------
-    float rawLux = 0.0f;
-    float lux = 0.0f;
-    if (bh1750_available) {
-        float r = lightMeter.readLightLevel();
-        if (r >= 0) {
-            rawLux = r;
-            lux = rawLux * LIGHT_CAL_FACTOR;
-            currentLux = lux;
+    // ---- 4. CCS811 ----
+    if (ccsOK) {
+        ccs.setEnvironmentalData(hum, tC);
+        if (ccs.available() && !ccs.readData()) {
+            ccsRawECO2 = ccs.geteCO2();
+            ccsECO2 = (uint16_t)(ccsRawECO2 * CO2_CAL_FACTOR);
+            ccsTVOC = ccs.getTVOC();
         }
     }
-    const char* lightStatus = getLightStatus(lux);
 
-    // -------------------------------------------------------------
-    // 3. Read Capacitive Soil Moisture Sensor v2.0
-    // -------------------------------------------------------------
-    int soilADC = 0;
-    float soilVoltage = 0.0f;
-    float soilMoisturePct = readSoilMoisture(soilADC, soilVoltage);
-    const char* soilStatus = getSoilStatus(soilMoisturePct);
-
-    // [COMMENTED] 4. Read HX711 5kg Weight Sensor
-    // long rawWeightADC = 0;
-    // float weightGrams = readWeight(rawWeightADC);
-
-    // =============================================================
-    //  Professional Serial Dashboard
-    // =============================================================
+    // =====================================================================
+    //  Professional Serial Output
+    // =====================================================================
     Serial.println();
     printLine('=');
-    Serial.printf("  MODULE 3 | READING #%-4lu | UPTIME: %s | WiFi: %s\n",
+    Serial.printf("  READING #%-4lu  |  UPTIME: %s  |  WiFi: %s\n",
         loopCount, uptime().c_str(),
-        WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString().c_str() : "Disconnected");
+        WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString().c_str() : "Connecting...");
     printLine('=');
 
-    // Section 1: Temperature & Humidity
-    Serial.println(F("  AMBIENT ENVIRONMENT  [DHT11 - GPIO 4]"));
+    // DHT11
+    Serial.println(F("  TEMPERATURE & HUMIDITY  [DHT11 - GPIO 4]"));
     printLine();
-    if (dhtOK) {
-        Serial.printf("    Temperature  :  %5.1f °C   (%5.1f °F)\n", tC, tF);
-        Serial.printf("    Humidity     :  %5.1f %%\n", hum);
-        Serial.printf("    Heat Index   :  %5.1f °C\n", hi);
-    } else {
-        Serial.println(F("    [WARNING] DHT11 read failed, using 25.0°C fallback."));
+    Serial.printf("    Temperature  :  %5.1f C   (%5.1f F)\n", tC, tF);
+    Serial.printf("    Humidity     :  %5.1f %%\n", hum);
+    Serial.printf("    Heat Index   :  %5.1f C\n", hi);
+    printLine();
+
+    // MQ-137
+    Serial.println(F("  AMMONIA GAS  [MQ-137 - GPIO 33/25]"));
+    printLine();
+    Serial.printf("    NH3 Level    :  %6.1f ppm   [%s]\n",
+                  nh3, nh3Label(nh3, mq137Warmed));
+    Serial.printf("    Voltage      :  %6.3f V\n", mq137V);
+    Serial.printf("    DO Alert     :  %s\n", alert ? "YES - THRESHOLD EXCEEDED!" : "No");
+    if (!mq137Warmed) {
+        unsigned long remain = (MQ137_WARMUP - (now - mq137WarmStart)) / 1000;
+        Serial.printf("    Warm-up      :  %lu seconds remaining\n", remain);
     }
     printLine();
 
-    // Section 2: Light Sensor
-    Serial.printf("  LIGHT INTENSITY  [BH1750 - I2C SDA=21 SCL=22]  %s\n",
-                  bh1750_available ? "[ONLINE]" : "[OFFLINE]");
+    // FS200A
+    Serial.println(F("  FLOW SENSOR  [FS200A - GPIO 27]"));
     printLine();
-    if (bh1750_available) {
-        Serial.printf("    Illuminance  :  %8.1f lx   [%s]\n", lux, lightStatus);
-        Serial.printf("    Raw Sensor   :  %8.1f lx   (Calibrated: x%.4f)\n", rawLux, LIGHT_CAL_FACTOR);
-        int lightBars = min((int)(lux / 200.0f), 30);
-        Serial.print(F("    Light Bar    :  ["));
-        for (int i = 0; i < lightBars; i++) Serial.print('#');
-        for (int i = lightBars; i < 30; i++) Serial.print(' ');
-        Serial.printf("] %.0f lx\n", lux);
+    Serial.printf("    Frequency    :  %6.2f Hz\n", flowHz);
+    Serial.printf("    Total Volume :  %6.2f L-eq\n", totalVolume);
+    Serial.printf("    Status       :  %s\n", flowLabel(flowHz));
+    printLine();
+
+    // CCS811
+    Serial.printf("  CO2 & TVOC  [CCS811 - Wire1 SDA=17 SCL=16]  %s\n",
+                  ccsOK ? "" : "  [OFFLINE]");
+    printLine();
+    if (ccsOK) {
+        Serial.printf("    eCO2         :  %5u ppm   [%s]\n",
+                      ccsECO2, co2Label(ccsECO2));
+        Serial.printf("    Raw Sensor   :  %5u ppm   (Calibrated: x%.4f)\n",
+                      ccsRawECO2, CO2_CAL_FACTOR);
+        Serial.printf("    TVOC         :  %5u ppb   [%s]\n",
+                      ccsTVOC, tvocLabel(ccsTVOC));
     } else {
-        Serial.println(F("    [ERR] Sensor not detected. Check wiring: SDA=21, SCL=22, ADDR=GND"));
+        Serial.println(F("    Check: WAK->GND, RST->3.3V, SDA=17, SCL=16"));
     }
     printLine();
 
-    // Section 3: Soil Moisture Sensor
-    Serial.println(F("  SOIL MOISTURE  [Capacitive v2.0 - GPIO 34]"));
-    printLine();
-    Serial.printf("    Moisture     :  %5.1f %%      [%s]\n", soilMoisturePct, soilStatus);
-    Serial.printf("    Analog ADC   :  %5d / 4095  (Air ~%d, Water ~%d)\n", soilADC, AIR_VALUE, WATER_VALUE);
-    Serial.printf("    Sensor Volt  :  %5.3f V\n", soilVoltage);
-
-    int soilBars = min((int)(soilMoisturePct / 4.0f), 25);
-    Serial.print(F("    Moisture Bar :  ["));
-    for (int i = 0; i < soilBars; i++) Serial.print('#');
-    for (int i = soilBars; i < 25; i++) Serial.print(' ');
-    Serial.printf("] %.1f %%\n", soilMoisturePct);
-    printLine();
-
-    // Section 4: Cloud Telemetry
-    Serial.print(F("  CLOUD -> ThingsBoard Telemetry (10 keys) ..."));
-    sendTelemetry(tC, tF, hum, hi, lux, lightStatus, soilMoisturePct, soilVoltage, soilADC, soilStatus);
+    // ThingsBoard
+    Serial.print(F("  CLOUD -> ThingsBoard  (16 keys) ..."));
+    sendTelemetry(tC, tF, hum, hi,
+                  nh3, nh3Label(nh3, mq137Warmed), mq137V, alert,
+                  pulses, flowHz, totalVolume, flowLabel(flowHz),
+                  ccsECO2, co2Label(ccsECO2), ccsTVOC, tvocLabel(ccsTVOC));
 
     printLine('=');
 
-    // -------------------------------------------------------------
-    // 5. Update 2004 Character LCD Display (Live Screen)
-    // -------------------------------------------------------------
+    // =====================================================================
+    //  2004 Character LCD Update (Live Screen)
+    // =====================================================================
     if (lcd_available) {
         char buf[21];
 
-        // Row 0: Temperature & Humidity
+        // Line 0: Temperature & Humidity
         snprintf(buf, sizeof(buf), "T:%4.1fC   H:%4.1f%%   ", tC, hum);
         lcd.setCursor(0, 0);
         lcd.print(buf);
 
-        // Row 1: Ambient Light (Lux) & Status
-        snprintf(buf, sizeof(buf), "L:%5.0flx [%-8s] ", lux, lightStatus);
+        // Line 1: CO2 & Status
+        snprintf(buf, sizeof(buf), "CO2:%4uppm [%-7s] ", ccsECO2, co2Label(ccsECO2));
         lcd.setCursor(0, 1);
         lcd.print(buf);
 
-        // Row 2: Soil Moisture (%) & Status
-        snprintf(buf, sizeof(buf), "Soil:%4.1f%% [%-7s]", soilMoisturePct, soilStatus);
+        // Line 2: TVOC & Ammonia (NH3)
+        snprintf(buf, sizeof(buf), "TVOC:%4u  NH3:%4.1fp", ccsTVOC, nh3);
         lcd.setCursor(0, 2);
         lcd.print(buf);
 
-        // Row 3: WiFi Status & Uptime
+        // Line 3: Flow & Uptime / WiFi
         if (WiFi.status() == WL_CONNECTED) {
-            snprintf(buf, sizeof(buf), "WiFi:OK   Up:%s", uptime().c_str());
+            snprintf(buf, sizeof(buf), "Flow:%4.1fHz Up:%s", flowHz, uptime().c_str());
         } else {
             snprintf(buf, sizeof(buf), "WiFi: Offline       ");
         }

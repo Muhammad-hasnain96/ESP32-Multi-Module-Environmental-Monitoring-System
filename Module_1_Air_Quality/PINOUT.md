@@ -1,4 +1,4 @@
-﻿# 💨 Module 1: Air Quality & Gas Monitoring System
+# 💨 Module 1: Air Quality & Gas Monitoring System
 
 ## 📌 Sensor Pinout Table
 
@@ -20,11 +20,23 @@
 | | `RST` | **`3.3V`** | — | ⚠️ **CRITICAL:** Active-LOW reset pin. Must connect to 3.3V. |
 | | `ADD / ADDR` | **`GND`** | — | Sets I2C address to `0x5A` |
 | | `VCC` | `3.3V` | — | Power supply |
+| **2004 I2C LCD** | `SDA` | **`GPIO 19`** | `5V (VIN)` | `Wire` Dedicated I2C Data bus |
+| | `SCL` | **`GPIO 18`** | — | `Wire` Dedicated I2C Clock bus (100 kHz) |
+| | `VCC` | `5V (VIN)` | — | ⚠️ **CRITICAL:** HW-61 backpack / LCD contrast needs 5V |
 | | `GND` | `GND` | — | Ground |
 
 ---
 
 ## ⚙️ Key Technical Features
+* **Dual Independent I2C Buses:**
+  * `Wire` (`GPIO 19` SDA, `GPIO 18` SCL) -> Dedicated for 2004 Character LCD (100 kHz, addresses `0x27` / `0x3F`).
+  * `Wire1` (`GPIO 17` SDA, `GPIO 16` SCL) -> Dedicated for CCS811 Air Quality sensor (50 kHz clock stretching).
+  * This dual-bus design completely prevents timing collisions and bus locks!
 * **CCS811 Environmental Compensation:** DHT11 temperature and humidity are fed into the CCS811 algorithm (`ccs.setEnvironmentalData`) to calculate accurate eCO2 & TVOC.
 * **MQ-137 0.0 ppm Baseline:** Calibrated to read 0.0 ppm in clean air and scale dynamically up to 500 ppm.
 * **ThingsBoard Cloud:** Pushes 16 telemetry keys every 3 seconds over HTTPS.
+* **2004 LCD Live 4-Line Display:**
+  * Line 0: Temperature & Humidity (`T: 24.8C   H: 28.5%`)
+  * Line 1: eCO2 & Air Quality Status (`CO2: 430ppm [EXCELL]`)
+  * Line 2: TVOC & Ammonia NH3 (`TVOC: 28   NH3: 0.0p`)
+  * Line 3: Flow Rate & System Uptime (`Flow: 0.0Hz Up:00:04`)

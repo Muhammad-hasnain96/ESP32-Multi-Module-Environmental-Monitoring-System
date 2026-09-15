@@ -1,5 +1,5 @@
-// =====================================================================
-// ESP32 — Multi-Sensor Environmental Monitoring System
+﻿// =====================================================================
+// ESP32 — MODULE 1: Air Quality, Gas, Flow & 2004 LCD System
 // =====================================================================
 //  Sensor         GPIO / Interface    Measurement
 //  ------------   ----------------   --------------------------------
@@ -9,6 +9,8 @@
 //  FS200A         GPIO 27 (INT)      Air/Water Flow
 //  CCS811         Wire1: SDA=17      eCO2 (ppm), TVOC (ppb)
 //                        SCL=16
+//  2004 I2C LCD   Wire:  SDA=19      20x4 Real-time Local Display
+//                        SCL=18
 // =====================================================================
 
 #include <Arduino.h>
@@ -19,6 +21,7 @@
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
 #include <Adafruit_CCS811.h>
+#include <LiquidCrystal_I2C.h>
 
 // =====================================================================
 //  1. DHT11 — Temperature & Humidity (GPIO 4)
@@ -54,6 +57,14 @@ bool    ccsOK    = false;
 const float CO2_CAL_FACTOR = 0.7313f; // Calibrated to master CO2 reference (430 ppm room air / 588 ppm raw)
 uint16_t ccsRawECO2 = 400;
 uint16_t ccsECO2 = 400, ccsTVOC = 0;
+
+// =====================================================================
+//  5. 2004 Character LCD (Wire: SDA=19, SCL=18, Auto-Detect 0x27 / 0x3F)
+// =====================================================================
+#define LCD_SDA_PIN  19
+#define LCD_SCL_PIN  18
+LiquidCrystal_I2C lcd(0x27, 20, 4);
+bool lcd_available = false;
 
 // =====================================================================
 //  WiFi & ThingsBoard
@@ -225,43 +236,85 @@ void setup() {
     delay(1000);
 
     printLine('=');
-    Serial.println(F("  ESP32  MULTI-SENSOR ENVIRONMENTAL MONITOR  v2.1"));
+    Serial.println(F("  ESP32 MODULE 1: AIR QUALITY, GAS & 2004 LCD SYSTEM"));
     printLine('=');
-    Serial.println(F("  Sensors: DHT11 | MQ-137 | FS200A | CCS811"));
-    Serial.println(F("  Cloud  : ThingsBoard  (16 telemetry keys)"));
+    Serial.println(F("  Sensors: DHT11 (GPIO 4) | MQ-137 (GPIO 33/25)"));
+    Serial.println(F("           FS200A (GPIO 27) | CCS811 (Wire1: SDA=17, SCL=16)"));
+    Serial.println(F("  Display: 2004 I2C LCD (Wire: SDA=19, SCL=18)"));
+    Serial.println(F("  Cloud  : ThingsBoard"));
     printLine('=');
 
     analogReadResolution(12);
     analogSetAttenuation(ADC_11db);
 
-    // DHT11
+    // 1. DHT11
     dht.begin();
-    Serial.println(F("  [OK] DHT11    GPIO 4"));
+    Serial.println(F("  [OK] DHT11    -> GPIO 4"));
 
-    // MQ-137
+    // 2. MQ-137
     pinMode(MQ137_AO, INPUT);
     pinMode(MQ137_DO, INPUT);
     mq137WarmStart = millis();
-    Serial.println(F("  [OK] MQ-137   GPIO 33 (AO) / GPIO 25 (DO)  [warming up...]"));
+    Serial.println(F("  [OK] MQ-137   -> GPIO 33 (AO) / GPIO 25 (DO) [warming up...]"));
 
-    // FS200A
+    // 3. FS200A
     pinMode(FLOW_PIN, INPUT_PULLUP);
     attachInterrupt(digitalPinToInterrupt(FLOW_PIN), flowISR, FALLING);
-    Serial.println(F("  [OK] FS200A   GPIO 27 (Interrupt)"));
+    Serial.println(F("  [OK] FS200A   -> GPIO 27 (Interrupt)"));
 
-    // CCS811 on I2C Bus 1 (Wire1: SDA=17, SCL=16)
+    // 4. Initialize 2004 I2C LCD on Dedicated Wire (SDA=19, SCL=18)
+    Wire.begin(LCD_SDA_PIN, LCD_SCL_PIN);
+    Serial.print(F("  [..] 2004 I2C LCD (Dedicated SDA=19, SCL=18)... "));
+    byte lcdAddr = 0;
+    Wire.beginTransmission(0x27);
+    if (Wire.endTransmission() == 0) lcdAddr = 0x27;
+    else {
+        Wire.beginTransmission(0x3F);
+        if (Wire.endTransmission() == 0) lcdAddr = 0x3F;
+    }
+    if (lcdAddr != 0) {
+        lcd = LiquidCrystal_I2C(lcdAddr, 20, 4);
+        lcd.init();
+        lcd.backlight();
+        lcd.clear();
+        lcd.setCursor(0, 0);
+        lcd.print(F("ESP32 MONITOR SYSTEM"));
+        lcd.setCursor(0, 1);
+        lcd.print(F("MODULE 1: AIR QUALITY"));
+        lcd.setCursor(0, 2);
+        lcd.print(F("WiFi Connecting...  "));
+        lcd.setCursor(0, 3);
+        lcd.print(F("Please wait...      "));
+        lcd_available = true;
+        Serial.printf("ONLINE at 0x%02X [OK]\n", lcdAddr);
+    } else {
+        Serial.println(F("OFFLINE (Check SDA=19, SCL=18, VCC=5V, GND)"));
+    }
+
+    // 5. CCS811 on I2C Bus 1 (Wire1: SDA=17, SCL=16)
     Wire1.begin(17, 16, 50000);
     Wire1.setTimeOut(3000);
-    Serial.print(F("  [..] CCS811   Wire1 SDA=17 SCL=16 ... "));
+    Serial.print(F("  [..] CCS811   -> Wire1 SDA=17 SCL=16 ... "));
     if (initCCS()) {
-        Serial.println(F("ONLINE"));
+        Serial.println(F("ONLINE [OK]"));
     } else {
         Serial.println(F("OFFLINE - Check WAK->GND, RST->3.3V"));
     }
 
-    // WiFi
+    // 6. WiFi
     Serial.print(F("  [..] WiFi     Connecting"));
     connectWiFi();
+
+    if (lcd_available) {
+        lcd.setCursor(0, 2);
+        if (WiFi.status() == WL_CONNECTED) {
+            lcd.print(F("WiFi: Connected!    "));
+        } else {
+            lcd.print(F("WiFi: Offline       "));
+        }
+        delay(1000);
+        lcd.clear();
+    }
 
     printLine('=');
     Serial.println();
@@ -371,4 +424,35 @@ void loop() {
                   ccsECO2, co2Label(ccsECO2), ccsTVOC, tvocLabel(ccsTVOC));
 
     printLine('=');
+
+    // =====================================================================
+    //  2004 Character LCD Update (Live Screen)
+    // =====================================================================
+    if (lcd_available) {
+        char buf[21];
+
+        // Line 0: Temperature & Humidity
+        snprintf(buf, sizeof(buf), "T:%4.1fC   H:%4.1f%%   ", tC, hum);
+        lcd.setCursor(0, 0);
+        lcd.print(buf);
+
+        // Line 1: CO2 & Status
+        snprintf(buf, sizeof(buf), "CO2:%4uppm [%-7s] ", ccsECO2, co2Label(ccsECO2));
+        lcd.setCursor(0, 1);
+        lcd.print(buf);
+
+        // Line 2: TVOC & Ammonia (NH3)
+        snprintf(buf, sizeof(buf), "TVOC:%4u  NH3:%4.1fp", ccsTVOC, nh3);
+        lcd.setCursor(0, 2);
+        lcd.print(buf);
+
+        // Line 3: Flow & Uptime / WiFi
+        if (WiFi.status() == WL_CONNECTED) {
+            snprintf(buf, sizeof(buf), "Flow:%4.1fHz Up:%s", flowHz, uptime().c_str());
+        } else {
+            snprintf(buf, sizeof(buf), "WiFi: Offline       ");
+        }
+        lcd.setCursor(0, 3);
+        lcd.print(buf);
+    }
 }
