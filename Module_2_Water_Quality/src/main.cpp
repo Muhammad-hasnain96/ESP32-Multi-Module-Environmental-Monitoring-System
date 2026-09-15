@@ -64,6 +64,7 @@ const float PH_SLOPE     = 5.03f; // (7.0 - 2.8) / (1.995 - 1.160) = 5.03 pH/V
 #define LCD_SCL_PIN  18
 LiquidCrystal_I2C lcd(0x27, 20, 4);
 bool lcd_available = false;
+int lcdScreenPage = 0; // 0 = Env & pH (Page 1), 1 = TDS & Flow (Page 2)
 
 // =====================================================================
 //  WiFi & ThingsBoard Configuration
@@ -126,18 +127,18 @@ const char* getPhStatus(float ph) {
 
 // Concise labels for 2004 Character LCD (20-column limit)
 const char* shortPhLabel(float ph) {
-    if (ph <  3.0f)  return "STRNG ACID";
-    if (ph <  6.5f)  return "ACIDIC";
+    if (ph <  3.0f)  return "HI-ACID";
+    if (ph <  6.5f)  return "ACIDIC ";
     if (ph <= 7.5f)  return "NEUTRAL";
-    if (ph <= 8.5f)  return "SLT ALKALI";
-    if (ph <= 11.0f) return "ALKALINE";
-    return                  "STRNG ALK";
+    if (ph <= 8.5f)  return "SLT ALK";
+    if (ph <= 11.0f) return "ALKALIN";
+    return                  "HI-ALKA";
 }
 
 const char* shortTdsLabel(float tds) {
-    if (tds <= 5.0f)   return "DRY/AIR";
+    if (tds <= 5.0f)   return "DRY ";
     if (tds < 50.0f)   return "PURE";
-    if (tds < 150.0f)  return "EXCELLENT";
+    if (tds < 150.0f)  return "EXCL";
     if (tds < 300.0f)  return "GOOD";
     if (tds < 500.0f)  return "FAIR";
     return                    "POOR";
@@ -495,33 +496,49 @@ void loop() {
     printLine('=');
 
     // =============================================================
-    //  2004 Character LCD Update (Live Screen)
+    //  2004 Character LCD Update (Rotating 2-Screen Multi-Page)
     // =============================================================
     if (lcd_available) {
         char buf[21];
 
-        // Line 0: Temperature & Humidity
-        if (dhtOK) {
-            snprintf(buf, sizeof(buf), "T:%4.1fC   H:%4.1f%%   ", tC, hum);
-        } else {
-            snprintf(buf, sizeof(buf), "T: --.-C   H: --.-%%   ");
+        if (lcdScreenPage == 0) {
+            // ---- SCREEN 1: Ambient Environment & Water pH ----
+            snprintf(buf, sizeof(buf), "-- ENV & pH [1/2] --");
+            lcd.setCursor(0, 0); lcd.print(buf);
+
+            if (dhtOK) {
+                snprintf(buf, sizeof(buf), "Temp    : %5.1f C   ", tC);
+            } else {
+                snprintf(buf, sizeof(buf), "Temp    :  --.- C   ");
+            }
+            lcd.setCursor(0, 1); lcd.print(buf);
+
+            if (dhtOK) {
+                snprintf(buf, sizeof(buf), "Humidity: %5.1f %%   ", hum);
+            } else {
+                snprintf(buf, sizeof(buf), "Humidity:  --.- %%   ");
+            }
+            lcd.setCursor(0, 2); lcd.print(buf);
+
+            snprintf(buf, sizeof(buf), "pH : %-4.2f [%-7s] ", phValue, shortPhLabel(phValue));
+            lcd.setCursor(0, 3); lcd.print(buf);
+        } 
+        else {
+            // ---- SCREEN 2: TDS Water Quality & Water Flow ----
+            snprintf(buf, sizeof(buf), "-- TDS & FLOW [2/2]-");
+            lcd.setCursor(0, 0); lcd.print(buf);
+
+            snprintf(buf, sizeof(buf), "TDS : %4.0fppm [%-4s]", tdsPPM, shortTdsLabel(tdsPPM));
+            lcd.setCursor(0, 1); lcd.print(buf);
+
+            snprintf(buf, sizeof(buf), "Flow : %6.2f L/min ", flowRateLMin);
+            lcd.setCursor(0, 2); lcd.print(buf);
+
+            snprintf(buf, sizeof(buf), "Total: %6.3f Liters", totalLiters);
+            lcd.setCursor(0, 3); lcd.print(buf);
         }
-        lcd.setCursor(0, 0);
-        lcd.print(buf);
 
-        // Line 1: Water pH & Status
-        snprintf(buf, sizeof(buf), "pH:%-5.2f  [%-9s]", phValue, shortPhLabel(phValue));
-        lcd.setCursor(0, 1);
-        lcd.print(buf);
-
-        // Line 2: TDS Value & Quality
-        snprintf(buf, sizeof(buf), "TDS:%4.0fppm [%-7s]", tdsPPM, shortTdsLabel(tdsPPM));
-        lcd.setCursor(0, 2);
-        lcd.print(buf);
-
-        // Line 3: Flow Rate & Total Volume
-        snprintf(buf, sizeof(buf), "Fl:%4.1fL/m Tot:%4.1fL", flowRateLMin, totalLiters);
-        lcd.setCursor(0, 3);
-        lcd.print(buf);
+        // Toggle page for next 3-second cycle
+        lcdScreenPage = (lcdScreenPage + 1) % 2;
     }
 }
