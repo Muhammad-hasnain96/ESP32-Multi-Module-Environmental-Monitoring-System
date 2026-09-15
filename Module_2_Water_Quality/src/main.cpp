@@ -6,13 +6,17 @@
 //   2. Analog TDS   : AOUT   -> GPIO 34 (VCC -> 3.3V/5V, GND -> GND)
 //   3. Flow Sensor  : Signal -> GPIO 27 (VCC -> 5V VIN, GND -> GND)
 //   4. E-201-C pH   : Po     -> GPIO 35 (VCC -> 5V VIN, GND -> GND)
+//   5. 2004 I2C LCD : SDA    -> GPIO 19 (VCC -> 5V VIN, GND -> GND)
+//                     SCL    -> GPIO 18
 // =====================================================================
 
 #include <Arduino.h>
+#include <Wire.h>
 #include <DHT.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
+#include <LiquidCrystal_I2C.h>
 
 // =====================================================================
 //  1. DHT11 Configuration (GPIO 4)
@@ -52,6 +56,14 @@ void IRAM_ATTR flowPulseISR() {
 // Vinegar:       1.995V -> pH 2.80
 const float PH_NEUTRAL_V = 1.160f;
 const float PH_SLOPE     = 5.03f; // (7.0 - 2.8) / (1.995 - 1.160) = 5.03 pH/V
+
+// =====================================================================
+//  5. 2004 Character LCD (Wire: SDA=19, SCL=18, Auto-Detect 0x27 / 0x3F)
+// =====================================================================
+#define LCD_SDA_PIN  19
+#define LCD_SCL_PIN  18
+LiquidCrystal_I2C lcd(0x27, 20, 4);
+bool lcd_available = false;
 
 // =====================================================================
 //  WiFi & ThingsBoard Configuration
@@ -110,6 +122,25 @@ const char* getPhStatus(float ph) {
     if (ph <= 8.5f) return "MILDLY ALKALINE (Safe / Mineral-Rich)";
     if (ph <= 11.0f) return "ALKALINE (Basic / Soapy)";
     return                 "STRONGLY ALKALINE (Hazardous / Caustic)";
+}
+
+// Concise labels for 2004 Character LCD (20-column limit)
+const char* shortPhLabel(float ph) {
+    if (ph <  3.0f)  return "STRNG ACID";
+    if (ph <  6.5f)  return "ACIDIC";
+    if (ph <= 7.5f)  return "NEUTRAL";
+    if (ph <= 8.5f)  return "SLT ALKALI";
+    if (ph <= 11.0f) return "ALKALINE";
+    return                  "STRNG ALK";
+}
+
+const char* shortTdsLabel(float tds) {
+    if (tds <= 5.0f)   return "DRY/AIR";
+    if (tds < 50.0f)   return "PURE";
+    if (tds < 150.0f)  return "EXCELLENT";
+    if (tds < 300.0f)  return "GOOD";
+    if (tds < 500.0f)  return "FAIR";
+    return                    "POOR";
 }
 
 // =====================================================================
@@ -283,6 +314,7 @@ void setup() {
     printLine('=');
     Serial.println(F("  Sensors: DHT11 (GPIO 4) | TDS (GPIO 34)"));
     Serial.println(F("           Flow (GPIO 27) | E-201-C pH (GPIO 35)"));
+    Serial.println(F("  Display: 2004 I2C LCD (Wire: SDA=19, SCL=18)"));
     Serial.println(F("  Cloud  : ThingsBoard"));
     printLine('=');
 
@@ -303,9 +335,49 @@ void setup() {
     attachInterrupt(digitalPinToInterrupt(FLOW_PIN), flowPulseISR, FALLING);
     Serial.println(F("  [OK] Water Flow Sensor -> GPIO 27 (Interrupt)"));
 
-    // 5. WiFi
+    // 5. Initialize 2004 I2C LCD on Dedicated Wire (SDA=19, SCL=18)
+    Wire.begin(LCD_SDA_PIN, LCD_SCL_PIN);
+    Serial.print(F("  [..] 2004 I2C LCD (Dedicated SDA=19, SCL=18)... "));
+    byte lcdAddr = 0;
+    Wire.beginTransmission(0x27);
+    if (Wire.endTransmission() == 0) lcdAddr = 0x27;
+    else {
+        Wire.beginTransmission(0x3F);
+        if (Wire.endTransmission() == 0) lcdAddr = 0x3F;
+    }
+    if (lcdAddr != 0) {
+        lcd = LiquidCrystal_I2C(lcdAddr, 20, 4);
+        lcd.init();
+        lcd.backlight();
+        lcd.clear();
+        lcd.setCursor(0, 0);
+        lcd.print(F("ESP32 MONITOR SYSTEM"));
+        lcd.setCursor(0, 1);
+        lcd.print(F("MODULE 2: WATER SYS "));
+        lcd.setCursor(0, 2);
+        lcd.print(F("WiFi Connecting...  "));
+        lcd.setCursor(0, 3);
+        lcd.print(F("Please wait...      "));
+        lcd_available = true;
+        Serial.printf("ONLINE at 0x%02X [OK]\n", lcdAddr);
+    } else {
+        Serial.println(F("OFFLINE (Check SDA=19, SCL=18, VCC=5V, GND)"));
+    }
+
+    // 6. WiFi
     Serial.print(F("  [..] WiFi Connecting"));
     connectWiFi();
+
+    if (lcd_available) {
+        lcd.setCursor(0, 2);
+        if (WiFi.status() == WL_CONNECTED) {
+            lcd.print(F("WiFi: Connected!    "));
+        } else {
+            lcd.print(F("WiFi: Offline       "));
+        }
+        delay(1000);
+        lcd.clear();
+    }
 
     printLine('=');
     Serial.println();
@@ -421,4 +493,35 @@ void loop() {
                   phValue, phVoltage, phStatus);
 
     printLine('=');
+
+    // =============================================================
+    //  2004 Character LCD Update (Live Screen)
+    // =============================================================
+    if (lcd_available) {
+        char buf[21];
+
+        // Line 0: Temperature & Humidity
+        if (dhtOK) {
+            snprintf(buf, sizeof(buf), "T:%4.1fC   H:%4.1f%%   ", tC, hum);
+        } else {
+            snprintf(buf, sizeof(buf), "T: --.-C   H: --.-%%   ");
+        }
+        lcd.setCursor(0, 0);
+        lcd.print(buf);
+
+        // Line 1: Water pH & Status
+        snprintf(buf, sizeof(buf), "pH:%-5.2f  [%-9s]", phValue, shortPhLabel(phValue));
+        lcd.setCursor(0, 1);
+        lcd.print(buf);
+
+        // Line 2: TDS Value & Quality
+        snprintf(buf, sizeof(buf), "TDS:%4.0fppm [%-7s]", tdsPPM, shortTdsLabel(tdsPPM));
+        lcd.setCursor(0, 2);
+        lcd.print(buf);
+
+        // Line 3: Flow Rate & Total Volume
+        snprintf(buf, sizeof(buf), "Fl:%4.1fL/m Tot:%4.1fL", flowRateLMin, totalLiters);
+        lcd.setCursor(0, 3);
+        lcd.print(buf);
+    }
 }
