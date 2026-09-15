@@ -1,4 +1,4 @@
-﻿// =====================================================================
+// =====================================================================
 // ESP32 — MODULE 2: Complete Water Quality, pH & Flow Monitoring System
 // =====================================================================
 // SENSOR WIRING:
@@ -227,13 +227,15 @@ void sendTelemetry(float tC, float tF, float hum, float hi,
     
     // JSON Payload (With all aliases for versatile widget compatibility)
     String p = "{";
-    // DHT11
-    p += "\"temperature\":"        + String(tC, 1);
-    p += ",\"temperatureF\":"      + String(tF, 1);
-    p += ",\"humidity\":"          + String(hum, 1);
-    p += ",\"heatIndex\":"         + String(hi, 1);
-    p += ",\"m2_temperature\":"    + String(tC, 1);
-    p += ",\"m2_humidity\":"       + String(hum, 1);
+    // DHT11 (Dedicated Module 2 keys — Never overwrites Module 1)
+    p += "\"m2_temperature\":"    + String(tC, 1);
+    p += ",\"m2_temperatureF\":"  + String(tF, 1);
+    p += ",\"m2_humidity\":"      + String(hum, 1);
+    p += ",\"m2_heatIndex\":"     + String(hi, 1);
+    p += ",\"m2_temp\":"          + String(tC, 1);
+    p += ",\"m2_hum\":"           + String(hum, 1);
+    p += ",\"water_temp\":"       + String(tC, 1);
+    p += ",\"water_humidity\":"   + String(hum, 1);
     // TDS Meter
     p += ",\"tdsPPM\":"            + String(tds, 1);
     p += ",\"tdsValue\":"          + String(tds, 1);
