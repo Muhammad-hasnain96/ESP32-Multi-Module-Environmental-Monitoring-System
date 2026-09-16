@@ -135,6 +135,26 @@ const char* getSoilStatus(float pct) {
     return                   "WATERLOGGED";
 }
 
+// Concise labels for 2004 Character LCD (20-column fit)
+const char* shortLightStatus(float lux) {
+    if (lux < 1.0f)     return "DARK";
+    if (lux < 50.0f)    return "DIM";
+    if (lux < 200.0f)   return "MODER";
+    if (lux < 500.0f)   return "BRIGHT";
+    if (lux < 1000.0f)  return "V-BRT";
+    if (lux < 10000.0f) return "SHADE";
+    if (lux < 30000.0f) return "CLOUDY";
+    return                     "SUNNY";
+}
+
+const char* shortSoilStatus(float pct) {
+    if (pct < 15.0f)  return "V-DRY";
+    if (pct < 35.0f)  return "DRY";
+    if (pct < 65.0f)  return "OPTIM";
+    if (pct < 85.0f)  return "WET";
+    return                   "FLOOD";
+}
+
 // =====================================================================
 //  Capacitive Soil Sensor Reading with Multi-Sample Filter
 // =====================================================================
@@ -270,6 +290,22 @@ void setup() {
         lcd.init();
         lcd.backlight();
         lcd.clear();
+
+        // 🌟 Welcome Splash Screen
+        lcd.setCursor(0, 0);
+        lcd.print(F("===================="));
+        lcd.setCursor(0, 1);
+        lcd.print(F("    Welcome to      "));
+        lcd.setCursor(0, 2);
+        lcd.print(F("     Module-3       "));
+        lcd.setCursor(0, 3);
+        lcd.print(F("===================="));
+        lcd_available = true;
+        Serial.printf("ONLINE at 0x%02X [OK]\n", lcdAddr);
+        delay(2500); // Show Welcome message clearly for 2.5 seconds
+
+        // System Initialization Status
+        lcd.clear();
         lcd.setCursor(0, 0);
         lcd.print(F("ESP32 MONITOR SYSTEM"));
         lcd.setCursor(0, 1);
@@ -278,8 +314,6 @@ void setup() {
         lcd.print(F("WiFi Connecting...  "));
         lcd.setCursor(0, 3);
         lcd.print(F("Please wait...      "));
-        lcd_available = true;
-        Serial.printf("ONLINE at 0x%02X [OK]\n", lcdAddr);
     } else {
         Serial.println(F("OFFLINE (Check SDA=19, SCL=18, VCC=5V, GND)"));
     }
@@ -316,7 +350,9 @@ void setup() {
         } else {
             lcd.print(F("WiFi: Offline       "));
         }
-        delay(1000);
+        lcd.setCursor(0, 3);
+        lcd.print(F("Starting System...  "));
+        delay(1200);
         lcd.clear();
     }
 
@@ -447,12 +483,12 @@ void loop() {
         lcd.print(buf);
 
         // Row 1: Ambient Light (Lux) & Status
-        snprintf(buf, sizeof(buf), "L:%5.0flx [%-8s] ", lux, lightStatus);
+        snprintf(buf, sizeof(buf), "Lux : %5.0f [%-6s] ", lux, shortLightStatus(lux));
         lcd.setCursor(0, 1);
         lcd.print(buf);
 
         // Row 2: Soil Moisture (%) & Status
-        snprintf(buf, sizeof(buf), "Soil:%4.1f%% [%-7s]", soilMoisturePct, soilStatus);
+        snprintf(buf, sizeof(buf), "Soil: %4.1f%% [%-5s] ", soilMoisturePct, shortSoilStatus(soilMoisturePct));
         lcd.setCursor(0, 2);
         lcd.print(buf);
 
