@@ -8,8 +8,8 @@
 //      - GND   -> GND
 //
 //   2. BH1750 Digital Light Sensor:
-//      - SDA   -> GPIO 8   (Wire1)
-//      - SCL   -> GPIO 9   (Wire1)
+//      - SDA   -> GPIO 15  (Wire1)
+//      - SCL   -> GPIO 16  (Wire1)
 //      - ADDR  -> GND (Address: 0x23)
 //      - VCC   -> 3.3V
 //      - GND   -> GND
@@ -50,10 +50,10 @@
 DHT dht(DHTPIN, DHTTYPE);
 
 // =====================================================================
-//  2. BH1750 Configuration (Wire1: SDA=8, SCL=9)
+//  2. BH1750 Configuration (Wire1: SDA=15, SCL=16)
 // =====================================================================
-#define BH1750_SDA_PIN  8
-#define BH1750_SCL_PIN  9
+#define BH1750_SDA_PIN  15
+#define BH1750_SCL_PIN  16
 BH1750 lightMeter(0x23);
 bool bh1750_available = false;
 float currentLux = 0.0f;
@@ -266,7 +266,7 @@ void setup() {
     printLine('=');
     Serial.println(F("  ESP32-S3 — MODULE 3: COMPLETE LIGHT, SOIL & ENVIRONMENT"));
     printLine('=');
-    Serial.println(F("  Sensors: DHT11 (GPIO 4) | BH1750 (Wire1: SDA=8, SCL=9) | Soil (GPIO 1)"));
+    Serial.println(F("  Sensors: DHT11 (GPIO 4) | BH1750 (Wire1: SDA=15, SCL=16) | Soil (GPIO 1)"));
     Serial.println(F("  Display: 2004 I2C LCD (Wire: SDA=17, SCL=18)"));
     Serial.println(F("  Cloud  : ThingsBoard"));
     printLine('=');
@@ -325,9 +325,9 @@ void setup() {
         Serial.println(F("OFFLINE (Check SDA=17, SCL=18, VCC=5V, GND)"));
     }
 
-    // 4. Initialize BH1750 on Wire1 (SDA=8, SCL=9)
+    // 4. Initialize BH1750 on Wire1 (SDA=15, SCL=16)
     Wire1.begin(BH1750_SDA_PIN, BH1750_SCL_PIN);
-    Serial.print(F("  [..] BH1750 Light Sensor on Wire1 (SDA=8, SCL=9)... "));
+    Serial.print(F("  [..] BH1750 Light Sensor on Wire1 (SDA=15, SCL=16)... "));
     if (lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, 0x23, &Wire1)) {
         bh1750_available = true;
         Serial.println(F("ONLINE [OK]"));
@@ -335,7 +335,7 @@ void setup() {
         bh1750_available = true;
         Serial.println(F("ONLINE at 0x5C [OK]"));
     } else {
-        Serial.println(F("OFFLINE! Check SDA=8, SCL=9, VCC=3.3V, ADDR=GND"));
+        Serial.println(F("OFFLINE! Check SDA=15, SCL=16, VCC=3.3V, ADDR=GND"));
     }
 
     // [COMMENTED] HX711 Load Cell Initialization
@@ -442,7 +442,7 @@ void loop() {
     printLine();
 
     // Section 2: Light Sensor
-    Serial.printf("  LIGHT INTENSITY  [BH1750 - Wire1 SDA=8 SCL=9]  %s\n",
+    Serial.printf("  LIGHT INTENSITY  [BH1750 - Wire1 SDA=15 SCL=16]  %s\n",
                   bh1750_available ? "[ONLINE]" : "[OFFLINE]");
     printLine();
     if (bh1750_available) {
@@ -454,7 +454,7 @@ void loop() {
         for (int i = lightBars; i < 30; i++) Serial.print(' ');
         Serial.printf("] %.0f lx\n", lux);
     } else {
-        Serial.println(F("    [ERR] Sensor not detected. Check wiring: SDA=8, SCL=9, ADDR=GND"));
+        Serial.println(F("    [ERR] Sensor not detected. Check wiring: SDA=15, SCL=16, ADDR=GND"));
     }
     printLine();
 

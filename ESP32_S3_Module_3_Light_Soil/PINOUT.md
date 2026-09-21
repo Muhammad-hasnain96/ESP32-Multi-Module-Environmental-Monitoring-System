@@ -7,8 +7,8 @@
 | **DHT11** | `DATA` | **`GPIO 4`** | `3.3V` / `5V` | Ambient Temperature (°C/°F) & Humidity (%) |
 | | `VCC` | `3.3V` / `5V` | — | Power |
 | | `GND` | `GND` | — | Ground |
-| **BH1750 Light Sensor** | `SDA` | **`GPIO 8`** | `3.3V` | `Wire1` I2C Data bus |
-| | `SCL` | **`GPIO 9`** | — | `Wire1` I2C Clock bus |
+| **BH1750 Light Sensor** | `SDA` | **`GPIO 15`** | `3.3V` | `Wire1` I2C Data bus |
+| | `SCL` | **`GPIO 16`** | — | `Wire1` I2C Clock bus |
 | | `ADDR` | **`GND`** | — | Sets I2C address to `0x23` |
 | | `VCC` | `3.3V` | — | Power supply |
 | | `GND` | `GND` | — | Ground |
