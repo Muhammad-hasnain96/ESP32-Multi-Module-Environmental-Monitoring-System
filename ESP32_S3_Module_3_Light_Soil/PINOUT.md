@@ -1,0 +1,28 @@
+# 🌿 ESP32-S3 Module 3: Light, Soil Moisture & Environmental System
+
+## 📌 Sensor Pinout Table (ESP32-S3)
+
+| Sensor | Sensor Pin | ESP32-S3 Pin | Power Voltage | Function / Notes |
+|---|---|---|---|---|
+| **DHT11** | `DATA` | **`GPIO 4`** | `3.3V` / `5V` | Ambient Temperature (°C/°F) & Humidity (%) |
+| | `VCC` | `3.3V` / `5V` | — | Power |
+| | `GND` | `GND` | — | Ground |
+| **BH1750 Light Sensor** | `SDA` | **`GPIO 8`** | `3.3V` | `Wire1` I2C Data bus |
+| | `SCL` | **`GPIO 9`** | — | `Wire1` I2C Clock bus |
+| | `ADDR` | **`GND`** | — | Sets I2C address to `0x23` |
+| | `VCC` | `3.3V` | — | Power supply |
+| | `GND` | `GND` | — | Ground |
+| **Capacitive Soil v2.0** | `AOUT` (Signal) | **`GPIO 1`** | `3.3V` | `ADC1_CH0` — Analog moisture level (0%–100%) |
+| | `VCC` | `3.3V` | — | Direct 3.3V linearity |
+| | `GND` | `GND` | — | Common Ground |
+| **2004 I2C LCD Display** | `SDA` | **`GPIO 17`** | `5V (VIN)` | Dedicated I2C Bus (`Wire`: Address `0x27` / `0x3F`) |
+| (20x4 Character Screen) | `SCL` | **`GPIO 18`** | — | Dedicated I2C Bus (`Wire`) |
+| | `VCC` | `5V (VIN)` | — | Power (5V required for crisp contrast & backlight) |
+| | `GND` | `GND` | — | Common Ground |
+
+---
+
+## ⚙️ Key Technical Features
+* **Master Light Calibration:** Calibrated with a $0.7308\times$ multiplier to match master reference instrument (200–205 lx range in office lighting).
+* **Capacitive Corrosion-Free Probe:** Insulated PCB electrodes that do not corrode in soil.
+* **ThingsBoard Cloud:** Pushes all 10 telemetry keys every 3 seconds over HTTPS.
