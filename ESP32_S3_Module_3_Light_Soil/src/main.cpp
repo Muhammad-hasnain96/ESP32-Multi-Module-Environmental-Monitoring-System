@@ -282,7 +282,11 @@ void setup() {
     Serial.println(F("  [OK] Soil Moisture Sensor on GPIO 1 (ADC1_CH0)"));
 
     // 3. Initialize 2004 I2C LCD on Dedicated Wire (SDA=17, SCL=18)
-    Wire.begin(LCD_SDA_PIN, LCD_SCL_PIN);
+    delay(100); // Allow LCD power to stabilize
+    pinMode(LCD_SDA_PIN, INPUT_PULLUP);
+    pinMode(LCD_SCL_PIN, INPUT_PULLUP);
+    Wire.begin(LCD_SDA_PIN, LCD_SCL_PIN, 50000); // 50kHz for rock-solid stability
+    Wire.setTimeOut(25);
     Serial.print(F("  [..] 2004 I2C LCD on Wire (SDA=17, SCL=18)... "));
     byte lcdAddr = 0;
     Wire.beginTransmission(0x27);
@@ -295,7 +299,9 @@ void setup() {
     if (lcdAddr != 0) {
         lcd = LiquidCrystal_I2C(lcdAddr, 20, 4);
         lcd.init();
+        Wire.begin(LCD_SDA_PIN, LCD_SCL_PIN, 50000); // Re-assert pins in case library called Wire.begin() with no args
         lcd.backlight();
+        lcd.display();
         lcd.clear();
 
         // 🌟 Welcome Splash Screen
@@ -326,6 +332,8 @@ void setup() {
     }
 
     // 4. Initialize BH1750 on Wire1 (SDA=15, SCL=16)
+    pinMode(BH1750_SDA_PIN, INPUT_PULLUP);
+    pinMode(BH1750_SCL_PIN, INPUT_PULLUP);
     Wire1.begin(BH1750_SDA_PIN, BH1750_SCL_PIN);
     Serial.print(F("  [..] BH1750 Light Sensor on Wire1 (SDA=15, SCL=16)... "));
     if (lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, 0x23, &Wire1)) {
@@ -337,14 +345,6 @@ void setup() {
     } else {
         Serial.println(F("OFFLINE! Check SDA=15, SCL=16, VCC=3.3V, ADDR=GND"));
     }
-
-    // [COMMENTED] HX711 Load Cell Initialization
-    // scale.begin(HX711_DOUT_PIN, HX711_SCK_PIN);
-    // if (scale.wait_ready_timeout(1000)) {
-    //     scale_available = true;
-    //     scale.set_scale(scale_calibration_factor);
-    //     scale.tare(10);
-    // }
 
     // 5. Connect WiFi
     Serial.print(F("  [..] WiFi Connecting"));
@@ -415,10 +415,6 @@ void loop() {
     float soilMoisturePct = readSoilMoisture(soilADC, soilVoltage);
     const char* soilStatus = getSoilStatus(soilMoisturePct);
 
-    // [COMMENTED] 4. Read HX711 5kg Weight Sensor
-    // long rawWeightADC = 0;
-    // float weightGrams = readWeight(rawWeightADC);
-
     // =============================================================
     //  Professional Serial Dashboard
     // =============================================================
@@ -433,11 +429,11 @@ void loop() {
     Serial.println(F("  AMBIENT ENVIRONMENT  [DHT11 - GPIO 4]"));
     printLine();
     if (dhtOK) {
-        Serial.printf("    Temperature  :  %5.1f °C   (%5.1f °F)\n", tC, tF);
+        Serial.printf("    Temperature  :  %5.1f C   (%5.1f F)\n", tC, tF);
         Serial.printf("    Humidity     :  %5.1f %%\n", hum);
-        Serial.printf("    Heat Index   :  %5.1f °C\n", hi);
+        Serial.printf("    Heat Index   :  %5.1f C\n", hi);
     } else {
-        Serial.println(F("    [WARNING] DHT11 read failed, using 25.0°C fallback."));
+        Serial.println(F("    [WARNING] DHT11 read failed, using 25.0C fallback."));
     }
     printLine();
 
