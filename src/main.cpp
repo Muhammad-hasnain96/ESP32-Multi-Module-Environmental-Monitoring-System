@@ -1,46 +1,41 @@
 // =====================================================================
-// ESP32-S3 — MODULE 3: Light, Soil & Environmental System
+// ESP32-S3 — MODULE 2: Complete Water Quality, pH & Flow Monitoring System
 // =====================================================================
 // SENSOR WIRING FOR ESP32-S3:
 //   1. DHT11 Sensor:
-//      - DATA  -> GPIO 4
-//      - VCC   -> 3.3V / 5V
-//      - GND   -> GND
+//      - DATA   -> GPIO 4
+//      - VCC    -> 3.3V
+//      - GND    -> GND
 //
-//   2. BH1750 Digital Light Sensor:
-//      - SDA   -> GPIO 15  (Wire1)
-//      - SCL   -> GPIO 16  (Wire1)
-//      - ADDR  -> GND (Address: 0x23)
-//      - VCC   -> 3.3V
-//      - GND   -> GND
+//   2. Analog TDS Meter:
+//      - AOUT   -> GPIO 1   (ADC1_CH0 - 12-bit Analog Input)
+//      - VCC    -> 3.3V
+//      - GND    -> GND
 //
-//   3. Capacitive Soil Moisture Sensor v2.0:
-//      - AOUT  -> GPIO 1   (ADC1_CH0 - 12-bit Analog Input)
-//      - VCC   -> 3.3V
-//      - GND   -> GND
+//   3. Water Flow Sensor (FS200A / YF-S201):
+//      - Signal -> GPIO 5   (Interrupt)
+//      - VCC    -> 3.3V / 5V (VIN)
+//      - GND    -> GND
 //
-//   4. 2004 Character LCD (I2C Backpack):
-//      - SDA   -> GPIO 17  (Wire: Address 0x27 / 0x3F)
-//      - SCL   -> GPIO 18  (Wire)
-//      - VCC   -> 5V (VIN)
-//      - GND   -> GND
+//   4. E-201-C BNC pH Meter (pH-4502C Module):
+//      - Po     -> GPIO 2   (ADC1_CH1 - 12-bit Analog Input)
+//      - VCC    -> 5V (VIN) [Requires 5V for op-amp linear headroom]
+//      - GND    -> GND (Both Power & Analog ground connected to GND)
 //
-//   [COMMENTED / OPTIONAL] 5. HX711 5kg Load Cell:
-//      - DT    -> GPIO 14
-//      - SCK   -> GPIO 12
-//      - VCC   -> 5V (VIN)
-//      - GND   -> GND
+//   5. 2004 Character LCD (I2C Backpack):
+//      - SDA    -> GPIO 17  (Wire: Address 0x27 / 0x3F)
+//      - SCL    -> GPIO 18  (Wire)
+//      - VCC    -> 5V (VIN) [5V required for contrast]
+//      - GND    -> GND
 // =====================================================================
 
 #include <Arduino.h>
 #include <Wire.h>
 #include <DHT.h>
-#include <BH1750.h>
-#include <LiquidCrystal_I2C.h>
-// #include "HX711.h"
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
+#include <LiquidCrystal_I2C.h>
 
 // =====================================================================
 //  1. DHT11 Configuration (GPIO 4)
@@ -50,44 +45,45 @@
 DHT dht(DHTPIN, DHTTYPE);
 
 // =====================================================================
-//  2. BH1750 Configuration (Wire1: SDA=15, SCL=16)
+//  2. Analog TDS Meter Configuration (GPIO 1 - ADC1_CH0)
 // =====================================================================
-#define BH1750_SDA_PIN  15
-#define BH1750_SCL_PIN  16
-BH1750 lightMeter(0x23);
-bool bh1750_available = false;
-float currentLux = 0.0f;
-
-// Calibration factor: Master sensor = 202.5 lx / BH1750 raw = 277.1 lx
-const float LIGHT_CAL_FACTOR = 0.7308f;
-
-// =====================================================================
-//  3. Capacitive Soil Moisture Sensor Configuration (GPIO 1 - ADC1_CH0)
-// =====================================================================
-#define SOIL_PIN         1
-#define VREF             3.3f
+#define TDS_PIN          1
+#define VREF             3.3f   // ESP32-S3 ADC Reference Voltage
 #define ADC_RESOLUTION   4095.0f
 
-// Calibration reference values (ADC 0-4095)
-const int AIR_VALUE   = 3000; // Dry air (0% moisture)
-const int WATER_VALUE = 1350; // Pure water (100% moisture)
+// =====================================================================
+//  3. Water Flow Sensor Configuration (GPIO 5 - Interrupt)
+// =====================================================================
+#define FLOW_PIN         5
+const float FLOW_CAL_FACTOR  = 7.5f;   // Pulses per second per L/min
+const float PULSES_PER_LITER = 450.0f; // 7.5 * 60 = 450 pulses per liter
+
+volatile unsigned long flowPulseCount = 0;
+float totalLiters = 0.0f;
+
+void IRAM_ATTR flowPulseISR() {
+    flowPulseCount++;
+}
 
 // =====================================================================
-//  4. 2004 Character LCD (Dedicated Wire: SDA=17, SCL=18)
+//  4. E-201-C BNC pH Sensor Configuration (GPIO 2 - ADC1_CH1)
+// =====================================================================
+#define PH_PIN           2
+
+// 2-Point Calibrated Constants:
+// Neutral Water: 1.160V -> pH 7.00
+// Vinegar:       1.995V -> pH 2.80
+const float PH_NEUTRAL_V = 1.160f;
+const float PH_SLOPE     = 5.03f; // (7.0 - 2.8) / (1.995 - 1.160) = 5.03 pH/V
+
+// =====================================================================
+//  5. 2004 Character LCD (Dedicated Wire: SDA=17, SCL=18)
 // =====================================================================
 #define LCD_SDA_PIN      17
 #define LCD_SCL_PIN      18
 LiquidCrystal_I2C lcd(0x27, 20, 4);
 bool lcd_available = false;
-
-// =====================================================================
-//  [COMMENTED] HX711 Load Cell Configuration
-// =====================================================================
-// #define HX711_DOUT_PIN  14
-// #define HX711_SCK_PIN   12
-// HX711 scale;
-// bool scale_available = false;
-// float scale_calibration_factor = 420.0f;
+int lcdScreenPage = 0; // 0 = Env & pH (Page 1), 1 = TDS & Flow (Page 2)
 
 // =====================================================================
 //  WiFi & ThingsBoard Configuration
@@ -100,12 +96,12 @@ const char* TB_TOKEN  = "52kqr3ax2flcp0gdy56s";
 // =====================================================================
 //  Timing & State Variables
 // =====================================================================
-const unsigned long INTERVAL = 3000UL; // Read and send every 3 seconds
+const unsigned long INTERVAL = 5000UL; // 5.0s interval between screen rotations & telemetry
 unsigned long lastLog = 0;
 unsigned long loopCount = 0;
 
 // =====================================================================
-//  Helpers
+//  Helpers — Formatting & Timing
 // =====================================================================
 String uptime() {
     unsigned long s = millis() / 1000;
@@ -120,56 +116,62 @@ void printLine(char c = '-') {
     Serial.println();
 }
 
-// Light Status Classification (Concise)
-const char* getLightStatus(float lux) {
-    if (lux < 1.0f)     return "DARK";
-    if (lux < 50.0f)    return "DIM";
-    if (lux < 200.0f)   return "MODERATE";
-    if (lux < 500.0f)   return "BRIGHT";
-    if (lux < 1000.0f)  return "VERY BRIGHT";
-    if (lux < 10000.0f) return "OUTDOOR SHADE";
-    if (lux < 30000.0f) return "CLOUDY OUTDOOR";
-    return                     "DIRECT SUNLIGHT";
+// =====================================================================
+//  Status Labels
+// =====================================================================
+const char* getWaterQuality(float tds) {
+    if (tds <= 5.0f)   return "DRY PROBE / AIR (0 ppm)";
+    if (tds < 50.0f)   return "RO / PURE WATER (Very Low Minerals)";
+    if (tds < 150.0f)  return "EXCELLENT (Ideal Drinking Water)";
+    if (tds < 300.0f)  return "GOOD (Normal Tap / Filtered Water)";
+    if (tds < 500.0f)  return "FAIR (Hard Water / High Minerals)";
+    return                    "POOR (Not Recommended for Drinking)";
 }
 
-// Soil Moisture Status Classification
-const char* getSoilStatus(float pct) {
-    if (pct < 15.0f)  return "VERY DRY";
-    if (pct < 35.0f)  return "DRY";
-    if (pct < 65.0f)  return "OPTIMAL";
-    if (pct < 85.0f)  return "WET";
-    return                   "WATERLOGGED";
+const char* getFlowStatus(float flowRate) {
+    if (flowRate <= 0.05f) return "NO FLOW (Idle)";
+    if (flowRate < 2.0f)   return "LOW FLOW (Trickle)";
+    if (flowRate < 10.0f)  return "NORMAL FLOW (Active)";
+    return                        "HIGH FLOW (Strong Stream)";
 }
 
-// Concise labels for 2004 Character LCD (20-column fit)
-const char* shortLightStatus(float lux) {
-    if (lux < 1.0f)     return "DARK";
-    if (lux < 50.0f)    return "DIM";
-    if (lux < 200.0f)   return "MODER";
-    if (lux < 500.0f)   return "BRIGHT";
-    if (lux < 1000.0f)  return "V-BRT";
-    if (lux < 10000.0f) return "SHADE";
-    if (lux < 30000.0f) return "CLOUDY";
-    return                     "SUNNY";
+const char* getPhStatus(float ph) {
+    if (ph <  3.0f) return "STRONGLY ACIDIC (Hazardous / Acid)";
+    if (ph <  6.5f) return "ACIDIC (Low pH / Corrosive)";
+    if (ph <= 7.5f) return "NEUTRAL (Ideal Drinking / Potable Water)";
+    if (ph <= 8.5f) return "MILDLY ALKALINE (Safe / Mineral-Rich)";
+    if (ph <= 11.0f) return "ALKALINE (Basic / Soapy)";
+    return                 "STRONGLY ALKALINE (Hazardous / Caustic)";
 }
 
-const char* shortSoilStatus(float pct) {
-    if (pct < 15.0f)  return "V-DRY";
-    if (pct < 35.0f)  return "DRY";
-    if (pct < 65.0f)  return "OPTIM";
-    if (pct < 85.0f)  return "WET";
-    return                   "FLOOD";
+// Concise labels for 2004 Character LCD (20-column limit)
+const char* shortPhLabel(float ph) {
+    if (ph <  3.0f)  return "HI-ACID";
+    if (ph <  6.5f)  return "ACIDIC ";
+    if (ph <= 7.5f)  return "NEUTRAL";
+    if (ph <= 8.5f)  return "SLT ALK";
+    if (ph <= 11.0f) return "ALKALIN";
+    return                  "HI-ALKA";
+}
+
+const char* shortTdsLabel(float tds) {
+    if (tds <= 5.0f)   return "DRY ";
+    if (tds < 50.0f)   return "PURE";
+    if (tds < 150.0f)  return "EXCL";
+    if (tds < 300.0f)  return "GOOD";
+    if (tds < 500.0f)  return "FAIR";
+    return                    "POOR";
 }
 
 // =====================================================================
-//  Capacitive Soil Sensor Reading with Multi-Sample Filter
+//  Analog TDS Reader (30-Sample Median Noise Filter + Temp Compensation)
 // =====================================================================
-float readSoilMoisture(int &outRawADC, float &outVoltage) {
+float readTDS(float currentTempC, float &outVoltage) {
     const int SAMPLES = 30;
     int buffer[SAMPLES];
 
     for (int i = 0; i < SAMPLES; i++) {
-        buffer[i] = analogRead(SOIL_PIN);
+        buffer[i] = analogRead(TDS_PIN);
         delay(2);
     }
 
@@ -187,11 +189,55 @@ float readSoilMoisture(int &outRawADC, float &outVoltage) {
     for (int i = 10; i < 20; i++) {
         sum += buffer[i];
     }
-    outRawADC = sum / 10;
+    float avgAdc = sum / 10.0f;
+    outVoltage = (avgAdc / ADC_RESOLUTION) * VREF;
+
+    if (outVoltage < 0.03f) {
+        return 0.0f;
+    }
+
+    float temp = (currentTempC > 0 && currentTempC < 80) ? currentTempC : 25.0f;
+    float tempCoeff = 1.0f + 0.02f * (temp - 25.0f);
+    float compVoltage = outVoltage / tempCoeff;
+
+    float tdsValue = (133.42f * compVoltage * compVoltage * compVoltage
+                    - 255.86f * compVoltage * compVoltage
+                    + 857.39f * compVoltage) * 0.5f;
+
+    return max(tdsValue, 0.0f);
+}
+
+// =====================================================================
+//  Analog pH Reader (30-Sample Median Noise Filter)
+// =====================================================================
+float readPH(float &outVoltage, int &outRawADC) {
+    const int SAMPLES = 30;
+    int buffer[SAMPLES];
+
+    for (int i = 0; i < SAMPLES; i++) {
+        buffer[i] = analogRead(PH_PIN);
+        delay(2);
+    }
+
+    for (int i = 0; i < SAMPLES - 1; i++) {
+        for (int j = i + 1; j < SAMPLES; j++) {
+            if (buffer[i] > buffer[j]) {
+                int temp = buffer[i];
+                buffer[i] = buffer[j];
+                buffer[j] = temp;
+            }
+        }
+    }
+
+    long sum = 0;
+    for (int i = 10; i < 20; i++) {
+        sum += buffer[i];
+    }
+    outRawADC = (int)(sum / 10);
     outVoltage = (outRawADC / ADC_RESOLUTION) * VREF;
 
-    float moisturePct = ((float)(AIR_VALUE - outRawADC) / (float)(AIR_VALUE - WATER_VALUE)) * 100.0f;
-    return constrain(moisturePct, 0.0f, 100.0f);
+    float calculatedPH = 7.0f - (outVoltage - PH_NEUTRAL_V) * PH_SLOPE;
+    return constrain(calculatedPH, 0.0f, 14.0f);
 }
 
 // =====================================================================
@@ -210,11 +256,13 @@ void connectWiFi() {
 }
 
 // =====================================================================
-//  ThingsBoard Telemetry Dispatch (Module 3: 10 Keys)
+//  ThingsBoard Telemetry Dispatch (Module 2: Complete Telemetry Keys)
 // =====================================================================
 void sendTelemetry(float tC, float tF, float hum, float hi,
-                   float lux, const char* lightLv,
-                   float soilPct, float soilV, int soilADC, const char* soilLv) {
+                   float tds, float tdsV, const char* quality,
+                   float flowRateLMin, float flowRateMLSec, float flowHz,
+                   float volTotal, unsigned long pulses, const char* flowStatus,
+                   float ph, float phV, const char* phStatus) {
     if (WiFi.status() != WL_CONNECTED) {
         Serial.println(F(" Skipped (WiFi offline)"));
         return;
@@ -227,24 +275,39 @@ void sendTelemetry(float tC, float tF, float hum, float hi,
         return;
     }
     https.addHeader("Content-Type", "application/json");
-
-    // JSON Payload — Dedicated Module 3 keys (Never overwrites Module 1)
+    
+    // JSON Payload (With all aliases for versatile widget compatibility)
     String p = "{";
-    // DHT11 Ambient for Module 3
-    p += "\"m3_temperature\":"   + String(tC, 1);
-    p += ",\"m3_temperatureF\":" + String(tF, 1);
-    p += ",\"m3_humidity\":"     + String(hum, 1);
-    p += ",\"m3_heatIndex\":"    + String(hi, 1);
-    // BH1750 Light
-    p += ",\"lux\":"           + String(lux, 1);
-    p += ",\"lightLevel\":\""   + String(lightLv) + "\"";
-    // Soil Moisture
-    p += ",\"soilMoisture\":"  + String(soilPct, 1);
-    p += ",\"moisture\":"      + String(soilPct, 1);
-    p += ",\"soil_moisture\":" + String(soilPct, 1);
-    p += ",\"soilVoltage\":"   + String(soilV, 3);
-    p += ",\"soilRawADC\":"    + String(soilADC);
-    p += ",\"soilStatus\":\""   + String(soilLv) + "\"";
+    // DHT11 (Dedicated Module 2 keys — Never overwrites Module 1)
+    p += "\"m2_temperature\":"    + String(tC, 1);
+    p += ",\"m2_temperatureF\":"  + String(tF, 1);
+    p += ",\"m2_humidity\":"      + String(hum, 1);
+    p += ",\"m2_heatIndex\":"     + String(hi, 1);
+    p += ",\"m2_temp\":"          + String(tC, 1);
+    p += ",\"m2_hum\":"           + String(hum, 1);
+    p += ",\"water_temp\":"       + String(tC, 1);
+    p += ",\"water_humidity\":"   + String(hum, 1);
+    // TDS Meter
+    p += ",\"tdsPPM\":"            + String(tds, 1);
+    p += ",\"tdsValue\":"          + String(tds, 1);
+    p += ",\"tdsVoltage\":"        + String(tdsV, 3);
+    p += ",\"waterQuality\":\""     + String(quality) + "\"";
+    p += ",\"tdsStatus\":\""       + String(quality) + "\"";
+    // Flow Sensor
+    p += ",\"flowRateLMin\":"      + String(flowRateLMin, 2);
+    p += ",\"flowRate\":"          + String(flowRateLMin, 2);
+    p += ",\"flowRateMLSec\":"     + String(flowRateMLSec, 1);
+    p += ",\"flowFrequencyHz\":"   + String(flowHz, 2);
+    p += ",\"totalVolumeLiters\":" + String(volTotal, 3);
+    p += ",\"totalLitres\":"       + String(volTotal, 3);
+    p += ",\"flowPulses\":"        + String(pulses);
+    p += ",\"flowStatus\":\""       + String(flowStatus) + "\"";
+    // pH Sensor
+    p += ",\"phValue\":"           + String(ph, 2);
+    p += ",\"phVoltage\":"         + String(phV, 3);
+    p += ",\"phStatus\":\""        + String(phStatus) + "\"";
+    p += ",\"m2_phValue\":"        + String(ph, 2);
+    p += ",\"m2_phStatus\":\""     + String(phStatus) + "\"";
     p += "}";
 
     int code = https.POST(p);
@@ -263,43 +326,53 @@ void setup() {
     Serial.begin(115200);
     delay(1000);
 
+    analogReadResolution(12);
+    analogSetAttenuation(ADC_11db); // Full range 0 - 3.3V
+
     printLine('=');
-    Serial.println(F("  ESP32-S3 — MODULE 3: COMPLETE LIGHT, SOIL & ENVIRONMENT"));
+    Serial.println(F("  ESP32-S3 — MODULE 2: WATER QUALITY, pH & FLOW MONITOR"));
     printLine('=');
-    Serial.println(F("  Sensors: DHT11 (GPIO 4) | BH1750 (Wire1: SDA=15, SCL=16) | Soil (GPIO 1)"));
+    Serial.println(F("  Sensors: DHT11 (GPIO 4) | TDS (GPIO 1 - ADC1_CH0)"));
+    Serial.println(F("           Flow (GPIO 5)  | E-201-C pH (GPIO 2 - ADC1_CH1)"));
     Serial.println(F("  Display: 2004 I2C LCD (Wire: SDA=17, SCL=18)"));
     Serial.println(F("  Cloud  : ThingsBoard"));
     printLine('=');
 
-    // 1. Initialize DHT11
+    // 1. TDS ADC (GPIO 1 - ADC1_CH0)
+    pinMode(TDS_PIN, INPUT);
+    Serial.println(F("  [OK] TDS Meter        -> GPIO 1 (ADC1_CH0)"));
+
+    // 2. pH ADC (GPIO 2 - ADC1_CH1)
+    pinMode(PH_PIN, INPUT);
+    Serial.println(F("  [OK] E-201-C pH Meter -> GPIO 2 (ADC1_CH1)"));
+
+    // 3. DHT11 (GPIO 4)
     dht.begin();
-    Serial.println(F("  [OK] DHT11 Initialized on GPIO 4"));
+    Serial.println(F("  [OK] DHT11            -> GPIO 4"));
 
-    // 2. Initialize Soil Sensor ADC
-    analogReadResolution(12);
-    analogSetAttenuation(ADC_11db); // 0 - 3.3V
-    pinMode(SOIL_PIN, INPUT);
-    Serial.println(F("  [OK] Soil Moisture Sensor on GPIO 1 (ADC1_CH0)"));
+    // 4. Flow Sensor Interrupt (GPIO 5)
+    pinMode(FLOW_PIN, INPUT_PULLUP);
+    attachInterrupt(digitalPinToInterrupt(FLOW_PIN), flowPulseISR, FALLING);
+    Serial.println(F("  [OK] Water Flow Sensor -> GPIO 5 (Interrupt)"));
 
-    // 3. Initialize 2004 I2C LCD on Dedicated Wire (SDA=17, SCL=18)
+    // 5. Initialize 2004 I2C LCD on Dedicated Wire (SDA=17, SCL=18)
     delay(100); // Allow LCD power to stabilize
     pinMode(LCD_SDA_PIN, INPUT_PULLUP);
     pinMode(LCD_SCL_PIN, INPUT_PULLUP);
     Wire.begin(LCD_SDA_PIN, LCD_SCL_PIN, 50000); // 50kHz for rock-solid stability
     Wire.setTimeOut(25);
-    Serial.print(F("  [..] 2004 I2C LCD on Wire (SDA=17, SCL=18)... "));
+    Serial.print(F("  [..] 2004 I2C LCD (Dedicated SDA=17, SCL=18)... "));
     byte lcdAddr = 0;
     Wire.beginTransmission(0x27);
-    if (Wire.endTransmission() == 0) {
-        lcdAddr = 0x27;
-    } else {
+    if (Wire.endTransmission() == 0) lcdAddr = 0x27;
+    else {
         Wire.beginTransmission(0x3F);
         if (Wire.endTransmission() == 0) lcdAddr = 0x3F;
     }
     if (lcdAddr != 0) {
         lcd = LiquidCrystal_I2C(lcdAddr, 20, 4);
         lcd.init();
-        Wire.begin(LCD_SDA_PIN, LCD_SCL_PIN, 50000); // Re-assert pins in case library called Wire.begin() with no args
+        Wire.begin(LCD_SDA_PIN, LCD_SCL_PIN, 50000); // Re-assert pins
         lcd.backlight();
         lcd.display();
         lcd.clear();
@@ -310,7 +383,7 @@ void setup() {
         lcd.setCursor(0, 1);
         lcd.print(F("    Welcome to      "));
         lcd.setCursor(0, 2);
-        lcd.print(F("     Module-3       "));
+        lcd.print(F("     Module-2       "));
         lcd.setCursor(0, 3);
         lcd.print(F("===================="));
         lcd_available = true;
@@ -322,7 +395,7 @@ void setup() {
         lcd.setCursor(0, 0);
         lcd.print(F("ESP32 MONITOR SYSTEM"));
         lcd.setCursor(0, 1);
-        lcd.print(F("MODULE 3: LIGHT&SOIL"));
+        lcd.print(F("MODULE 2: WATER SYS "));
         lcd.setCursor(0, 2);
         lcd.print(F("WiFi Connecting...  "));
         lcd.setCursor(0, 3);
@@ -331,22 +404,7 @@ void setup() {
         Serial.println(F("OFFLINE (Check SDA=17, SCL=18, VCC=5V, GND)"));
     }
 
-    // 4. Initialize BH1750 on Wire1 (SDA=15, SCL=16)
-    pinMode(BH1750_SDA_PIN, INPUT_PULLUP);
-    pinMode(BH1750_SCL_PIN, INPUT_PULLUP);
-    Wire1.begin(BH1750_SDA_PIN, BH1750_SCL_PIN);
-    Serial.print(F("  [..] BH1750 Light Sensor on Wire1 (SDA=15, SCL=16)... "));
-    if (lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, 0x23, &Wire1)) {
-        bh1750_available = true;
-        Serial.println(F("ONLINE [OK]"));
-    } else if (lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, 0x5C, &Wire1)) {
-        bh1750_available = true;
-        Serial.println(F("ONLINE at 0x5C [OK]"));
-    } else {
-        Serial.println(F("OFFLINE! Check SDA=15, SCL=16, VCC=3.3V, ADDR=GND"));
-    }
-
-    // 5. Connect WiFi
+    // 6. WiFi
     Serial.print(F("  [..] WiFi Connecting"));
     connectWiFi();
 
@@ -374,7 +432,12 @@ void loop() {
     connectWiFi();
 
     unsigned long now = millis();
-    if (now - lastLog < INTERVAL) { delay(50); return; }
+    if (now - lastLog < INTERVAL) {
+        delay(50);
+        return;
+    }
+
+    float elapsedSec = (now - lastLog) / 1000.0f;
     lastLog = now;
     loopCount++;
 
@@ -393,34 +456,41 @@ void loop() {
     float hi = dht.computeHeatIndex(tC, hum, false);
 
     // -------------------------------------------------------------
-    // 2. Read BH1750 Light Sensor (with Master Calibration)
+    // 2. Read Water Flow Sensor (FS200A)
     // -------------------------------------------------------------
-    float rawLux = 0.0f;
-    float lux = 0.0f;
-    if (bh1750_available) {
-        float r = lightMeter.readLightLevel();
-        if (r >= 0) {
-            rawLux = r;
-            lux = rawLux * LIGHT_CAL_FACTOR;
-            currentLux = lux;
-        }
-    }
-    const char* lightStatus = getLightStatus(lux);
+    noInterrupts();
+    unsigned long pulses = flowPulseCount;
+    flowPulseCount = 0;
+    interrupts();
+
+    float flowHz = pulses / elapsedSec;
+    float flowRateLMin  = flowHz / FLOW_CAL_FACTOR;
+    float flowRateMLSec = (flowRateLMin * 1000.0f) / 60.0f;
+    float litersInPeriod = (float)pulses / PULSES_PER_LITER;
+    totalLiters += litersInPeriod;
+    const char* flowStatus = getFlowStatus(flowRateLMin);
 
     // -------------------------------------------------------------
-    // 3. Read Capacitive Soil Moisture Sensor v2.0
+    // 3. Read Analog TDS Meter (Live DHT11 Temperature Compensation)
     // -------------------------------------------------------------
-    int soilADC = 0;
-    float soilVoltage = 0.0f;
-    float soilMoisturePct = readSoilMoisture(soilADC, soilVoltage);
-    const char* soilStatus = getSoilStatus(soilMoisturePct);
+    float tdsVoltage = 0.0f;
+    float tdsPPM = readTDS(tC, tdsVoltage);
+    const char* qualityStr = getWaterQuality(tdsPPM);
+
+    // -------------------------------------------------------------
+    // 4. Read E-201-C BNC pH Sensor
+    // -------------------------------------------------------------
+    float phVoltage = 0.0f;
+    int   phRawADC = 0;
+    float phValue = readPH(phVoltage, phRawADC);
+    const char* phStatus = getPhStatus(phValue);
 
     // =============================================================
     //  Professional Serial Dashboard
     // =============================================================
     Serial.println();
     printLine('=');
-    Serial.printf("  MODULE 3 | READING #%-4lu | UPTIME: %s | WiFi: %s\n",
+    Serial.printf("  ESP32-S3 MODULE 2 | READING #%-4lu | UPTIME: %s | WiFi: %s\n",
         loopCount, uptime().c_str(),
         WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString().c_str() : "Disconnected");
     printLine('=');
@@ -437,71 +507,83 @@ void loop() {
     }
     printLine();
 
-    // Section 2: Light Sensor
-    Serial.printf("  LIGHT INTENSITY  [BH1750 - Wire1 SDA=15 SCL=16]  %s\n",
-                  bh1750_available ? "[ONLINE]" : "[OFFLINE]");
+    // Section 2: TDS Water Quality
+    Serial.println(F("  WATER QUALITY  [Analog TDS Meter - GPIO 1 (ADC1_CH0)]"));
     printLine();
-    if (bh1750_available) {
-        Serial.printf("    Illuminance  :  %8.1f lx   [%s]\n", lux, lightStatus);
-        Serial.printf("    Raw Sensor   :  %8.1f lx   (Calibrated: x%.4f)\n", rawLux, LIGHT_CAL_FACTOR);
-        int lightBars = min((int)(lux / 200.0f), 30);
-        Serial.print(F("    Light Bar    :  ["));
-        for (int i = 0; i < lightBars; i++) Serial.print('#');
-        for (int i = lightBars; i < 30; i++) Serial.print(' ');
-        Serial.printf("] %.0f lx\n", lux);
-    } else {
-        Serial.println(F("    [ERR] Sensor not detected. Check wiring: SDA=15, SCL=16, ADDR=GND"));
-    }
+    Serial.printf("    TDS Value    :  %6.1f ppm   [%s]\n", tdsPPM, qualityStr);
+    Serial.printf("    Sensor Volt  :  %6.3f V\n", tdsVoltage);
     printLine();
 
-    // Section 3: Soil Moisture Sensor
-    Serial.println(F("  SOIL MOISTURE  [Capacitive v2.0 - GPIO 1]"));
+    // Section 3: pH Measurement
+    Serial.println(F("  WATER pH LEVEL  [E-201-C BNC - GPIO 2 (ADC1_CH1)]"));
     printLine();
-    Serial.printf("    Moisture     :  %5.1f %%      [%s]\n", soilMoisturePct, soilStatus);
-    Serial.printf("    Analog ADC   :  %5d / 4095  (Air ~%d, Water ~%d)\n", soilADC, AIR_VALUE, WATER_VALUE);
-    Serial.printf("    Sensor Volt  :  %5.3f V\n", soilVoltage);
-
-    int soilBars = min((int)(soilMoisturePct / 4.0f), 25);
-    Serial.print(F("    Moisture Bar :  ["));
-    for (int i = 0; i < soilBars; i++) Serial.print('#');
-    for (int i = soilBars; i < 25; i++) Serial.print(' ');
-    Serial.printf("] %.1f %%\n", soilMoisturePct);
+    Serial.printf("    pH Value     :  %6.2f       [%s]\n", phValue, phStatus);
+    Serial.printf("    Sensor Volt  :  %6.3f V    (Raw ADC: %4d)\n", phVoltage, phRawADC);
     printLine();
 
-    // Section 4: Cloud Telemetry
-    Serial.print(F("  CLOUD -> ThingsBoard Telemetry (10 keys) ..."));
-    sendTelemetry(tC, tF, hum, hi, lux, lightStatus, soilMoisturePct, soilVoltage, soilADC, soilStatus);
+    // Section 4: Water Flow Sensor
+    Serial.println(F("  WATER FLOW MONITOR  [FS200A / YF-S201 - GPIO 5]"));
+    printLine();
+    Serial.printf("    Flow Rate    :  %6.2f L/min   (%5.1f mL/sec)\n", flowRateLMin, flowRateMLSec);
+    Serial.printf("    Frequency    :  %6.2f Hz      (%lu pulses in %1.1fs)\n", flowHz, pulses, elapsedSec);
+    Serial.printf("    Total Volume :  %6.3f Liters\n", totalLiters);
+    Serial.printf("    Flow Status  :  %s\n", flowStatus);
+    printLine();
+
+    // Section 5: Cloud Telemetry
+    Serial.print(F("  CLOUD -> ThingsBoard Telemetry (All Keys) ..."));
+    sendTelemetry(tC, tF, hum, hi,
+                  tdsPPM, tdsVoltage, qualityStr,
+                  flowRateLMin, flowRateMLSec, flowHz,
+                  totalLiters, pulses, flowStatus,
+                  phValue, phVoltage, phStatus);
 
     printLine('=');
 
-    // -------------------------------------------------------------
-    // 5. Update 2004 Character LCD Display (Live Screen)
-    // -------------------------------------------------------------
+    // =============================================================
+    //  2004 Character LCD Update (Rotating 2-Screen Multi-Page)
+    // =============================================================
     if (lcd_available) {
         char buf[21];
 
-        // Row 0: Temperature & Humidity
-        snprintf(buf, sizeof(buf), "T:%4.1fC   H:%4.1f%%   ", tC, hum);
-        lcd.setCursor(0, 0);
-        lcd.print(buf);
+        if (lcdScreenPage == 0) {
+            // ---- SCREEN 1: Ambient Environment & Water pH ----
+            snprintf(buf, sizeof(buf), "-- ENV & pH  [1/2] -");
+            lcd.setCursor(0, 0); lcd.print(buf);
 
-        // Row 1: Ambient Light (Lux) & Status
-        snprintf(buf, sizeof(buf), "Lux : %5.0f [%-6s] ", lux, shortLightStatus(lux));
-        lcd.setCursor(0, 1);
-        lcd.print(buf);
+            if (dhtOK) {
+                snprintf(buf, sizeof(buf), "Temp    : %5.1f C   ", tC);
+            } else {
+                snprintf(buf, sizeof(buf), "Temp    :  --.- C   ");
+            }
+            lcd.setCursor(0, 1); lcd.print(buf);
 
-        // Row 2: Soil Moisture (%) & Status
-        snprintf(buf, sizeof(buf), "Soil: %4.1f%% [%-5s] ", soilMoisturePct, shortSoilStatus(soilMoisturePct));
-        lcd.setCursor(0, 2);
-        lcd.print(buf);
+            if (dhtOK) {
+                snprintf(buf, sizeof(buf), "Humidity: %5.1f %%   ", hum);
+            } else {
+                snprintf(buf, sizeof(buf), "Humidity:  --.- %%   ");
+            }
+            lcd.setCursor(0, 2); lcd.print(buf);
 
-        // Row 3: WiFi Status & Uptime
-        if (WiFi.status() == WL_CONNECTED) {
-            snprintf(buf, sizeof(buf), "WiFi:OK   Up:%s", uptime().c_str());
-        } else {
-            snprintf(buf, sizeof(buf), "WiFi: Offline       ");
+            snprintf(buf, sizeof(buf), "pH : %-4.2f [%-7s] ", phValue, shortPhLabel(phValue));
+            lcd.setCursor(0, 3); lcd.print(buf);
+        } 
+        else {
+            // ---- SCREEN 2: TDS Water Quality & Water Flow ----
+            snprintf(buf, sizeof(buf), "-- TDS & FLOW [2/2]-");
+            lcd.setCursor(0, 0); lcd.print(buf);
+
+            snprintf(buf, sizeof(buf), "TDS : %4.0fppm [%-4s]", tdsPPM, shortTdsLabel(tdsPPM));
+            lcd.setCursor(0, 1); lcd.print(buf);
+
+            snprintf(buf, sizeof(buf), "Flow : %5.1f L/min  ", flowRateLMin);
+            lcd.setCursor(0, 2); lcd.print(buf);
+
+            snprintf(buf, sizeof(buf), "Total: %6.2f Liters", totalLiters);
+            lcd.setCursor(0, 3); lcd.print(buf);
         }
-        lcd.setCursor(0, 3);
-        lcd.print(buf);
+
+        // Toggle page for next 5-second cycle
+        lcdScreenPage = (lcdScreenPage + 1) % 2;
     }
 }

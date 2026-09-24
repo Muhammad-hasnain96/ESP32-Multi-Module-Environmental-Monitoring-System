@@ -1,13 +1,32 @@
 // =====================================================================
-// ESP32 — MODULE 2: Complete Water Quality, pH & Flow Monitoring System
+// ESP32-S3 — MODULE 2: Complete Water Quality, pH & Flow Monitoring System
 // =====================================================================
-// SENSOR WIRING:
-//   1. DHT11        : DATA   -> GPIO 4  (VCC -> 3.3V/5V, GND -> GND)
-//   2. Analog TDS   : AOUT   -> GPIO 34 (VCC -> 3.3V/5V, GND -> GND)
-//   3. Flow Sensor  : Signal -> GPIO 27 (VCC -> 5V VIN, GND -> GND)
-//   4. E-201-C pH   : Po     -> GPIO 35 (VCC -> 5V VIN, GND -> GND)
-//   5. 2004 I2C LCD : SDA    -> GPIO 19 (VCC -> 5V VIN, GND -> GND)
-//                     SCL    -> GPIO 18
+// SENSOR WIRING FOR ESP32-S3:
+//   1. DHT11 Sensor:
+//      - DATA   -> GPIO 4
+//      - VCC    -> 3.3V
+//      - GND    -> GND
+//
+//   2. Analog TDS Meter:
+//      - AOUT   -> GPIO 1   (ADC1_CH0 - 12-bit Analog Input)
+//      - VCC    -> 3.3V
+//      - GND    -> GND
+//
+//   3. Water Flow Sensor (FS200A / YF-S201):
+//      - Signal -> GPIO 5   (Interrupt)
+//      - VCC    -> 3.3V / 5V (VIN)
+//      - GND    -> GND
+//
+//   4. E-201-C BNC pH Meter (pH-4502C Module):
+//      - Po     -> GPIO 2   (ADC1_CH1 - 12-bit Analog Input)
+//      - VCC    -> 5V (VIN) [Requires 5V for op-amp linear headroom]
+//      - GND    -> GND (Both Power & Analog ground connected to GND)
+//
+//   5. 2004 Character LCD (I2C Backpack):
+//      - SDA    -> GPIO 17  (Wire: Address 0x27 / 0x3F)
+//      - SCL    -> GPIO 18  (Wire)
+//      - VCC    -> 5V (VIN) [5V required for contrast]
+//      - GND    -> GND
 // =====================================================================
 
 #include <Arduino.h>
@@ -26,16 +45,16 @@
 DHT dht(DHTPIN, DHTTYPE);
 
 // =====================================================================
-//  2. Analog TDS Meter Configuration (GPIO 34 - ADC1_CH6)
+//  2. Analog TDS Meter Configuration (GPIO 1 - ADC1_CH0)
 // =====================================================================
-#define TDS_PIN          34
-#define VREF             3.3f   // ESP32 ADC Reference Voltage
+#define TDS_PIN          1
+#define VREF             3.3f   // ESP32-S3 ADC Reference Voltage
 #define ADC_RESOLUTION   4095.0f
 
 // =====================================================================
-//  3. Water Flow Sensor Configuration (GPIO 27 - Interrupt)
+//  3. Water Flow Sensor Configuration (GPIO 5 - Interrupt)
 // =====================================================================
-#define FLOW_PIN         27
+#define FLOW_PIN         5
 const float FLOW_CAL_FACTOR  = 7.5f;   // Pulses per second per L/min
 const float PULSES_PER_LITER = 450.0f; // 7.5 * 60 = 450 pulses per liter
 
@@ -47,9 +66,9 @@ void IRAM_ATTR flowPulseISR() {
 }
 
 // =====================================================================
-//  4. E-201-C BNC pH Sensor Configuration (GPIO 35 - ADC1_CH7)
+//  4. E-201-C BNC pH Sensor Configuration (GPIO 2 - ADC1_CH1)
 // =====================================================================
-#define PH_PIN           35
+#define PH_PIN           2
 
 // 2-Point Calibrated Constants:
 // Neutral Water: 1.160V -> pH 7.00
@@ -58,10 +77,10 @@ const float PH_NEUTRAL_V = 1.160f;
 const float PH_SLOPE     = 5.03f; // (7.0 - 2.8) / (1.995 - 1.160) = 5.03 pH/V
 
 // =====================================================================
-//  5. 2004 Character LCD (Wire: SDA=19, SCL=18, Auto-Detect 0x27 / 0x3F)
+//  5. 2004 Character LCD (Dedicated Wire: SDA=17, SCL=18)
 // =====================================================================
-#define LCD_SDA_PIN  19
-#define LCD_SCL_PIN  18
+#define LCD_SDA_PIN      17
+#define LCD_SCL_PIN      18
 LiquidCrystal_I2C lcd(0x27, 20, 4);
 bool lcd_available = false;
 int lcdScreenPage = 0; // 0 = Env & pH (Page 1), 1 = TDS & Flow (Page 2)
@@ -77,7 +96,7 @@ const char* TB_TOKEN  = "52kqr3ax2flcp0gdy56s";
 // =====================================================================
 //  Timing & State Variables
 // =====================================================================
-const unsigned long INTERVAL = 4500UL; // 4.5 seconds interval (4 to 5 seconds between screen rotations)
+const unsigned long INTERVAL = 5000UL; // 5.0s interval between screen rotations & telemetry
 unsigned long lastLog = 0;
 unsigned long loopCount = 0;
 
@@ -311,34 +330,38 @@ void setup() {
     analogSetAttenuation(ADC_11db); // Full range 0 - 3.3V
 
     printLine('=');
-    Serial.println(F("  ESP32 — MODULE 2: WATER QUALITY, pH & FLOW MONITOR"));
+    Serial.println(F("  ESP32-S3 — MODULE 2: WATER QUALITY, pH & FLOW MONITOR"));
     printLine('=');
-    Serial.println(F("  Sensors: DHT11 (GPIO 4) | TDS (GPIO 34)"));
-    Serial.println(F("           Flow (GPIO 27) | E-201-C pH (GPIO 35)"));
-    Serial.println(F("  Display: 2004 I2C LCD (Wire: SDA=19, SCL=18)"));
+    Serial.println(F("  Sensors: DHT11 (GPIO 4) | TDS (GPIO 1 - ADC1_CH0)"));
+    Serial.println(F("           Flow (GPIO 5)  | E-201-C pH (GPIO 2 - ADC1_CH1)"));
+    Serial.println(F("  Display: 2004 I2C LCD (Wire: SDA=17, SCL=18)"));
     Serial.println(F("  Cloud  : ThingsBoard"));
     printLine('=');
 
-    // 1. TDS ADC
+    // 1. TDS ADC (GPIO 1 - ADC1_CH0)
     pinMode(TDS_PIN, INPUT);
-    Serial.println(F("  [OK] TDS Meter        -> GPIO 34 (ADC1_CH6)"));
+    Serial.println(F("  [OK] TDS Meter        -> GPIO 1 (ADC1_CH0)"));
 
-    // 2. pH ADC
+    // 2. pH ADC (GPIO 2 - ADC1_CH1)
     pinMode(PH_PIN, INPUT);
-    Serial.println(F("  [OK] E-201-C pH Meter -> GPIO 35 (ADC1_CH7)"));
+    Serial.println(F("  [OK] E-201-C pH Meter -> GPIO 2 (ADC1_CH1)"));
 
-    // 3. DHT11
+    // 3. DHT11 (GPIO 4)
     dht.begin();
     Serial.println(F("  [OK] DHT11            -> GPIO 4"));
 
-    // 4. Flow Sensor Interrupt
+    // 4. Flow Sensor Interrupt (GPIO 5)
     pinMode(FLOW_PIN, INPUT_PULLUP);
     attachInterrupt(digitalPinToInterrupt(FLOW_PIN), flowPulseISR, FALLING);
-    Serial.println(F("  [OK] Water Flow Sensor -> GPIO 27 (Interrupt)"));
+    Serial.println(F("  [OK] Water Flow Sensor -> GPIO 5 (Interrupt)"));
 
-    // 5. Initialize 2004 I2C LCD on Dedicated Wire (SDA=19, SCL=18)
-    Wire.begin(LCD_SDA_PIN, LCD_SCL_PIN);
-    Serial.print(F("  [..] 2004 I2C LCD (Dedicated SDA=19, SCL=18)... "));
+    // 5. Initialize 2004 I2C LCD on Dedicated Wire (SDA=17, SCL=18)
+    delay(100); // Allow LCD power to stabilize
+    pinMode(LCD_SDA_PIN, INPUT_PULLUP);
+    pinMode(LCD_SCL_PIN, INPUT_PULLUP);
+    Wire.begin(LCD_SDA_PIN, LCD_SCL_PIN, 50000); // 50kHz for rock-solid stability
+    Wire.setTimeOut(25);
+    Serial.print(F("  [..] 2004 I2C LCD (Dedicated SDA=17, SCL=18)... "));
     byte lcdAddr = 0;
     Wire.beginTransmission(0x27);
     if (Wire.endTransmission() == 0) lcdAddr = 0x27;
@@ -349,7 +372,9 @@ void setup() {
     if (lcdAddr != 0) {
         lcd = LiquidCrystal_I2C(lcdAddr, 20, 4);
         lcd.init();
+        Wire.begin(LCD_SDA_PIN, LCD_SCL_PIN, 50000); // Re-assert pins
         lcd.backlight();
+        lcd.display();
         lcd.clear();
 
         // 🌟 Welcome Splash Screen
@@ -376,7 +401,7 @@ void setup() {
         lcd.setCursor(0, 3);
         lcd.print(F("Please wait...      "));
     } else {
-        Serial.println(F("OFFLINE (Check SDA=19, SCL=18, VCC=5V, GND)"));
+        Serial.println(F("OFFLINE (Check SDA=17, SCL=18, VCC=5V, GND)"));
     }
 
     // 6. WiFi
@@ -407,28 +432,17 @@ void loop() {
     connectWiFi();
 
     unsigned long now = millis();
-    if (now - lastLog < INTERVAL) { delay(50); return; }
+    if (now - lastLog < INTERVAL) {
+        delay(50);
+        return;
+    }
+
     float elapsedSec = (now - lastLog) / 1000.0f;
     lastLog = now;
     loopCount++;
 
     // -------------------------------------------------------------
-    // 1. Water Flow Sensor (Atomic Read)
-    // -------------------------------------------------------------
-    noInterrupts();
-    unsigned long pulses = flowPulseCount;
-    flowPulseCount = 0;
-    interrupts();
-
-    float flowHz = pulses / elapsedSec;
-    float flowRateLMin = flowHz / FLOW_CAL_FACTOR;
-    float flowRateMLSec = (flowRateLMin * 1000.0f) / 60.0f;
-    float addedVolume = pulses / PULSES_PER_LITER;
-    totalLiters += addedVolume;
-    const char* flowStatus = getFlowStatus(flowRateLMin);
-
-    // -------------------------------------------------------------
-    // 2. DHT11 Read
+    // 1. Read DHT11 Temperature & Humidity
     // -------------------------------------------------------------
     float hum  = dht.readHumidity();
     float tC   = dht.readTemperature();
@@ -442,14 +456,29 @@ void loop() {
     float hi = dht.computeHeatIndex(tC, hum, false);
 
     // -------------------------------------------------------------
-    // 3. TDS Sensor (with live DHT11 temperature compensation)
+    // 2. Read Water Flow Sensor (FS200A)
+    // -------------------------------------------------------------
+    noInterrupts();
+    unsigned long pulses = flowPulseCount;
+    flowPulseCount = 0;
+    interrupts();
+
+    float flowHz = pulses / elapsedSec;
+    float flowRateLMin  = flowHz / FLOW_CAL_FACTOR;
+    float flowRateMLSec = (flowRateLMin * 1000.0f) / 60.0f;
+    float litersInPeriod = (float)pulses / PULSES_PER_LITER;
+    totalLiters += litersInPeriod;
+    const char* flowStatus = getFlowStatus(flowRateLMin);
+
+    // -------------------------------------------------------------
+    // 3. Read Analog TDS Meter (Live DHT11 Temperature Compensation)
     // -------------------------------------------------------------
     float tdsVoltage = 0.0f;
     float tdsPPM = readTDS(tC, tdsVoltage);
     const char* qualityStr = getWaterQuality(tdsPPM);
 
     // -------------------------------------------------------------
-    // 4. E-201-C pH Sensor
+    // 4. Read E-201-C BNC pH Sensor
     // -------------------------------------------------------------
     float phVoltage = 0.0f;
     int   phRawADC = 0;
@@ -461,7 +490,7 @@ void loop() {
     // =============================================================
     Serial.println();
     printLine('=');
-    Serial.printf("  MODULE 2 | READING #%-4lu | UPTIME: %s | WiFi: %s\n",
+    Serial.printf("  ESP32-S3 MODULE 2 | READING #%-4lu | UPTIME: %s | WiFi: %s\n",
         loopCount, uptime().c_str(),
         WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString().c_str() : "Disconnected");
     printLine('=');
@@ -470,30 +499,30 @@ void loop() {
     Serial.println(F("  AMBIENT ENVIRONMENT  [DHT11 - GPIO 4]"));
     printLine();
     if (dhtOK) {
-        Serial.printf("    Temperature  :  %5.1f °C   (%5.1f °F)\n", tC, tF);
+        Serial.printf("    Temperature  :  %5.1f C   (%5.1f F)\n", tC, tF);
         Serial.printf("    Humidity     :  %5.1f %%\n", hum);
-        Serial.printf("    Heat Index   :  %5.1f °C\n", hi);
+        Serial.printf("    Heat Index   :  %5.1f C\n", hi);
     } else {
-        Serial.println(F("    [WARNING] DHT11 read failed, using 25.0°C fallback."));
+        Serial.println(F("    [WARNING] DHT11 read failed, using 25.0C fallback."));
     }
     printLine();
 
     // Section 2: TDS Water Quality
-    Serial.println(F("  WATER QUALITY  [Analog TDS Meter - GPIO 34]"));
+    Serial.println(F("  WATER QUALITY  [Analog TDS Meter - GPIO 1 (ADC1_CH0)]"));
     printLine();
     Serial.printf("    TDS Value    :  %6.1f ppm   [%s]\n", tdsPPM, qualityStr);
     Serial.printf("    Sensor Volt  :  %6.3f V\n", tdsVoltage);
     printLine();
 
     // Section 3: pH Measurement
-    Serial.println(F("  WATER pH LEVEL  [E-201-C BNC - GPIO 35]"));
+    Serial.println(F("  WATER pH LEVEL  [E-201-C BNC - GPIO 2 (ADC1_CH1)]"));
     printLine();
     Serial.printf("    pH Value     :  %6.2f       [%s]\n", phValue, phStatus);
     Serial.printf("    Sensor Volt  :  %6.3f V    (Raw ADC: %4d)\n", phVoltage, phRawADC);
     printLine();
 
     // Section 4: Water Flow Sensor
-    Serial.println(F("  WATER FLOW MONITOR  [FS200A / YF-S201 - GPIO 27]"));
+    Serial.println(F("  WATER FLOW MONITOR  [FS200A / YF-S201 - GPIO 5]"));
     printLine();
     Serial.printf("    Flow Rate    :  %6.2f L/min   (%5.1f mL/sec)\n", flowRateLMin, flowRateMLSec);
     Serial.printf("    Frequency    :  %6.2f Hz      (%lu pulses in %1.1fs)\n", flowHz, pulses, elapsedSec);
@@ -519,7 +548,7 @@ void loop() {
 
         if (lcdScreenPage == 0) {
             // ---- SCREEN 1: Ambient Environment & Water pH ----
-            snprintf(buf, sizeof(buf), "-- ENV & pH [1/2] --");
+            snprintf(buf, sizeof(buf), "-- ENV & pH  [1/2] -");
             lcd.setCursor(0, 0); lcd.print(buf);
 
             if (dhtOK) {
@@ -547,14 +576,14 @@ void loop() {
             snprintf(buf, sizeof(buf), "TDS : %4.0fppm [%-4s]", tdsPPM, shortTdsLabel(tdsPPM));
             lcd.setCursor(0, 1); lcd.print(buf);
 
-            snprintf(buf, sizeof(buf), "Flow : %6.2f L/min ", flowRateLMin);
+            snprintf(buf, sizeof(buf), "Flow : %5.1f L/min  ", flowRateLMin);
             lcd.setCursor(0, 2); lcd.print(buf);
 
-            snprintf(buf, sizeof(buf), "Total: %6.3f Liters", totalLiters);
+            snprintf(buf, sizeof(buf), "Total: %6.2f Liters", totalLiters);
             lcd.setCursor(0, 3); lcd.print(buf);
         }
 
-        // Toggle page for next 3-second cycle
+        // Toggle page for next 5-second cycle
         lcdScreenPage = (lcdScreenPage + 1) % 2;
     }
 }
