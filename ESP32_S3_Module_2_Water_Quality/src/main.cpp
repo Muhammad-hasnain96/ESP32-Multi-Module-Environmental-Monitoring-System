@@ -51,6 +51,12 @@ DHT dht(DHTPIN, DHTTYPE);
 #define VREF             3.3f   // ESP32-S3 ADC Reference Voltage
 #define ADC_RESOLUTION   4095.0f
 
+// Dry air cutoff threshold:
+// In dry air, the module's op-amp / rectifier output sits at a baseline
+// leakage of ~0.18V - 0.25V (~220-310 ADC), which calculates as ~80-100 ppm.
+// Any voltage at or below TDS_DRY_VOLTAGE_THRESHOLD is treated as dry air -> 0.0 ppm.
+const float TDS_DRY_VOLTAGE_THRESHOLD = 0.26f;
+
 // =====================================================================
 //  3. Water Flow Sensor Configuration (GPIO 5 - Interrupt)
 // =====================================================================
@@ -166,7 +172,7 @@ const char* shortTdsLabel(float tds) {
 // =====================================================================
 //  Analog TDS Reader (30-Sample Median Noise Filter + Temp Compensation)
 // =====================================================================
-float readTDS(float currentTempC, float &outVoltage) {
+float readTDS(float currentTempC, float &outVoltage, int &outRawADC) {
     const int SAMPLES = 30;
     int buffer[SAMPLES];
 
@@ -189,10 +195,11 @@ float readTDS(float currentTempC, float &outVoltage) {
     for (int i = 10; i < 20; i++) {
         sum += buffer[i];
     }
-    float avgAdc = sum / 10.0f;
-    outVoltage = (avgAdc / ADC_RESOLUTION) * VREF;
+    outRawADC = (int)(sum / 10);
+    outVoltage = (outRawADC / ADC_RESOLUTION) * VREF;
 
-    if (outVoltage < 0.03f) {
+    // Check for dry probe in air or disconnected probe
+    if (outVoltage <= TDS_DRY_VOLTAGE_THRESHOLD) {
         return 0.0f;
     }
 
@@ -203,6 +210,10 @@ float readTDS(float currentTempC, float &outVoltage) {
     float tdsValue = (133.42f * compVoltage * compVoltage * compVoltage
                     - 255.86f * compVoltage * compVoltage
                     + 857.39f * compVoltage) * 0.5f;
+
+    if (tdsValue < 5.0f) {
+        tdsValue = 0.0f;
+    }
 
     return max(tdsValue, 0.0f);
 }
@@ -474,7 +485,8 @@ void loop() {
     // 3. Read Analog TDS Meter (Live DHT11 Temperature Compensation)
     // -------------------------------------------------------------
     float tdsVoltage = 0.0f;
-    float tdsPPM = readTDS(tC, tdsVoltage);
+    int   tdsRawADC   = 0;
+    float tdsPPM     = readTDS(tC, tdsVoltage, tdsRawADC);
     const char* qualityStr = getWaterQuality(tdsPPM);
 
     // -------------------------------------------------------------
@@ -511,7 +523,7 @@ void loop() {
     Serial.println(F("  WATER QUALITY  [Analog TDS Meter - GPIO 1 (ADC1_CH0)]"));
     printLine();
     Serial.printf("    TDS Value    :  %6.1f ppm   [%s]\n", tdsPPM, qualityStr);
-    Serial.printf("    Sensor Volt  :  %6.3f V\n", tdsVoltage);
+    Serial.printf("    Sensor Volt  :  %6.3f V    (Raw ADC: %4d)\n", tdsVoltage, tdsRawADC);
     printLine();
 
     // Section 3: pH Measurement

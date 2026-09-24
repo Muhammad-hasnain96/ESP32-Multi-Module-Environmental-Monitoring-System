@@ -26,3 +26,4 @@
 * **Master Light Calibration:** Calibrated with a $0.7308\times$ multiplier to match master reference instrument (200–205 lx range in office lighting).
 * **Capacitive Corrosion-Free Probe:** Insulated PCB electrodes that do not corrode in soil.
 * **ThingsBoard Cloud:** Pushes all 10 telemetry keys every 3 seconds over HTTPS.
+l
