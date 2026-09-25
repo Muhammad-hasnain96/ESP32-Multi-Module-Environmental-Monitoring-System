@@ -77,6 +77,7 @@ bool bh1750Found = false;
 float currentLux = 0.0f;
 int wire1SDA = -1;
 int wire1SCL = -1;
+int bh1750FailCount = 0;
 
 // CCS811 State (Wire1)
 Adafruit_CCS811 ccs;
@@ -124,41 +125,53 @@ void printLine(char c = '=') {
 void initLCD() {
     if (lcdFound) return;
 
-    pinMode(LCD_SDA_PIN, INPUT_PULLUP);
-    pinMode(LCD_SCL_PIN, INPUT_PULLUP);
-    Wire.begin(LCD_SDA_PIN, LCD_SCL_PIN, 50000);
-    Wire.setTimeOut(25);
-    delay(50);
+    const int LCD_PAIRS[][2] = {
+        {17, 18}, {15, 18}, {18, 17}, {8, 9}, {1, 2}
+    };
+    const int NUM_LCD_PAIRS = sizeof(LCD_PAIRS) / sizeof(LCD_PAIRS[0]);
 
-    byte foundAddr = 0;
-    Wire.beginTransmission(0x27);
-    if (Wire.endTransmission() == 0) foundAddr = 0x27;
-    else {
-        Wire.beginTransmission(0x3F);
-        if (Wire.endTransmission() == 0) foundAddr = 0x3F;
-    }
+    for (int i = 0; i < NUM_LCD_PAIRS; i++) {
+        int sda = LCD_PAIRS[i][0];
+        int scl = LCD_PAIRS[i][1];
+        if (dhtPin != -1 && (sda == dhtPin || scl == dhtPin)) continue;
+        if (wire1SDA != -1 && (sda == wire1SDA || scl == wire1SCL)) continue;
 
-    if (foundAddr != 0) {
-        lcdAddr = foundAddr;
-        if (pLcd != nullptr) delete pLcd;
-        pLcd = new LiquidCrystal_I2C(lcdAddr, 20, 4);
-        pLcd->init();
-        Wire.begin(LCD_SDA_PIN, LCD_SCL_PIN, 50000); // Re-assert pins
-        pLcd->backlight();
-        pLcd->clear();
-        pLcd->setCursor(0, 0);
-        pLcd->print(F("===================="));
-        pLcd->setCursor(0, 1);
-        pLcd->print(F(" ESP32-S3 GENERIC   "));
-        pLcd->setCursor(0, 2);
-        pLcd->print(F(" SMART SENSOR HUB   "));
-        pLcd->setCursor(0, 3);
-        pLcd->print(F("===================="));
-        lcdFound = true;
-        Serial.printf("  [+] 2004 LCD Initialized on Wire (SDA=%d, SCL=%d) at 0x%02X\n",
-                      LCD_SDA_PIN, LCD_SCL_PIN, lcdAddr);
-    } else {
-        Serial.println(F("  [-] 2004 LCD not detected on Wire (SDA=17, SCL=18)."));
+        pinMode(sda, INPUT_PULLUP);
+        pinMode(scl, INPUT_PULLUP);
+        Wire.end();
+        Wire.begin(sda, scl, 50000);
+        Wire.setTimeOut(25);
+        delay(20);
+
+        byte foundAddr = 0;
+        Wire.beginTransmission(0x27);
+        if (Wire.endTransmission() == 0) foundAddr = 0x27;
+        else {
+            Wire.beginTransmission(0x3F);
+            if (Wire.endTransmission() == 0) foundAddr = 0x3F;
+        }
+
+        if (foundAddr != 0) {
+            lcdAddr = foundAddr;
+            if (pLcd != nullptr) delete pLcd;
+            pLcd = new LiquidCrystal_I2C(lcdAddr, 20, 4);
+            pLcd->init();
+            Wire.begin(sda, scl, 50000); // Re-assert pins
+            pLcd->backlight();
+            pLcd->clear();
+            pLcd->setCursor(0, 0);
+            pLcd->print(F("===================="));
+            pLcd->setCursor(0, 1);
+            pLcd->print(F(" ESP32-S3 GENERIC   "));
+            pLcd->setCursor(0, 2);
+            pLcd->print(F(" SMART SENSOR HUB   "));
+            pLcd->setCursor(0, 3);
+            pLcd->print(F("===================="));
+            lcdFound = true;
+            Serial.printf("  [+] 2004 LCD Initialized on Wire (SDA=%d, SCL=%d) at 0x%02X\n",
+                          sda, scl, lcdAddr);
+            return;
+        }
     }
 }
 
@@ -513,6 +526,17 @@ void loop() {
             float lux = lightMeter.readLightLevel();
             if (lux >= 0.0f) {
                 currentLux = lux;
+                bh1750FailCount = 0;
+            } else {
+                bh1750FailCount++;
+                if (bh1750FailCount >= 2) {
+                    Serial.printf("  [!] BH1750 UNPLUGGED from Wire1 (SDA=%d, SCL=%d)! Re-enabling auto scan...\n", wire1SDA, wire1SCL);
+                    bh1750Found = false;
+                    currentLux = 0.0f;
+                    wire1SDA = -1;
+                    wire1SCL = -1;
+                    bh1750FailCount = 0;
+                }
             }
         }
 
