@@ -2,12 +2,13 @@
 // ESP32-S3 — GENERIC SMART SENSOR HUB (True Auto-Detecting System)
 // =====================================================================
 // Plug-and-Play Hub Architecture:
+//   - LCD 2004: Dedicated Wire on GPIO 17 (SDA) & GPIO 18 (SCL)
+//   - I2C Sensors (BH1750, CCS811): Wire1 on GPIO 15 (SDA) & GPIO 16 (SCL)
+//     (Supports reverse 16/15 auto-detection)
 //   - DHT11 Auto-Discovery: Scans GPIOs (4, 5, 6, 7, 1, 2, 8, 9, 10)
-//     via 20ms protocol handshake pulse.
-//   - I2C Auto-Discovery: Scans pin pairs for BH1750 (0x23), CCS811 (0x5A),
-//     and 2004 Character LCD (0x27 / 0x3F).
-//   - Dynamic 2004 LCD: Displays readings of whichever sensors are online!
-//   - ThingsBoard Cloud: Sends telemetry for active sensors.
+//     with hot-unplug detection and automatic pin switching!
+//   - Dynamic 2004 LCD: Rotating live multi-page display.
+//   - ThingsBoard Cloud: Real-time telemetry streaming.
 //
 // Access Token: 2HGvWTV145aFOdJbjAwQ
 // Server: thingsboard.cloud
@@ -37,67 +38,61 @@ const unsigned long SENSOR_INTERVAL = 3000;   // Sensor read & telemetry every 3
 const unsigned long LCD_PAGE_TIME   = 4000;   // Rotate LCD screen every 4s
 
 // =====================================================================
-//  Candidate Pin Definitions for Auto-Discovery
+//  Hardware Pin Assignments
 // =====================================================================
+// 1. LCD 2004 on Dedicated Primary I2C (Wire)
+#define LCD_SDA_PIN   17
+#define LCD_SCL_PIN   18
+
+// 2. Candidate pairs for Secondary I2C (Wire1 - Sensors: BH1750 / CCS811)
 struct I2CPair {
     int sda;
     int scl;
     const char* label;
 };
 
-// Candidate I2C pin pairs on ESP32-S3
-const I2CPair I2C_CANDIDATES[] = {
+const I2CPair WIRE1_CANDIDATES[] = {
     { 15, 16, "SDA=15, SCL=16" },
     { 16, 15, "SDA=16, SCL=15" },
-    { 17, 18, "SDA=17, SCL=18" },
-    { 18, 17, "SDA=18, SCL=17" },
     { 8,  9,  "SDA=8,  SCL=9"  },
-    { 9,  8,  "SDA=9,  SCL=8"  },
-    { 1,  2,  "SDA=1,  SCL=2"  },
-    { 2,  1,  "SDA=2,  SCL=1"  },
-    { 4,  5,  "SDA=4,  SCL=5"  },
-    { 5,  4,  "SDA=5,  SCL=4"  },
-    { 6,  7,  "SDA=6,  SCL=7"  },
-    { 7,  6,  "SDA=7,  SCL=6"  }
+    { 1,  2,  "SDA=1,  SCL=2"  }
 };
-const int NUM_I2C_CANDIDATES = sizeof(I2C_CANDIDATES) / sizeof(I2C_CANDIDATES[0]);
+const int NUM_WIRE1_CANDIDATES = sizeof(WIRE1_CANDIDATES) / sizeof(WIRE1_CANDIDATES[0]);
 
-// Candidate single-wire GPIOs for DHT11 auto-scan
+// 3. Candidate single-wire GPIOs for DHT11 auto-scan
 const int DHT_CANDIDATES[] = { 4, 5, 6, 7, 1, 2, 8, 9, 10 };
 const int NUM_DHT_CANDIDATES = sizeof(DHT_CANDIDATES) / sizeof(DHT_CANDIDATES[0]);
 
 // =====================================================================
 //  Global Sensor State & Pointers
 // =====================================================================
-// 1. Dual Hardware I2C Buses (Wire & Wire1)
-int wireSDA = -1, wireSCL = -1;
-int wire1SDA = -1, wire1SCL = -1;
-
-// 2. 2004 LCD Display
+// LCD State (Wire)
 LiquidCrystal_I2C* pLcd = nullptr;
 bool lcdFound = false;
 uint8_t lcdAddr = 0x27;
 
-// 3. BH1750 Ambient Light Sensor
+// BH1750 State (Wire1)
 BH1750 lightMeter;
 bool bh1750Found = false;
 float currentLux = 0.0f;
+int wire1SDA = -1;
+int wire1SCL = -1;
 
-// 4. CCS811 eCO2 / TVOC Sensor
+// CCS811 State (Wire1)
 Adafruit_CCS811 ccs;
 bool ccsFound = false;
 uint16_t currentCO2  = 400;
 uint16_t currentTVOC = 0;
 
-// 5. DHT11 Temperature & Humidity
+// DHT11 State (Single-Wire GPIO)
 DHT* pDht = nullptr;
 int  dhtPin = -1;
 bool dhtFound = false;
+int  dhtFailCount = 0;
 float currentTempC = 0.0f;
 float currentTempF = 0.0f;
 float currentHum   = 0.0f;
 float currentHI    = 0.0f;
-int   dhtFailCount = 0;
 
 // Timing trackers
 unsigned long lastSensorRead = 0;
@@ -124,10 +119,115 @@ void printLine(char c = '=') {
 }
 
 // =====================================================================
-//  Auto-Discovery: DHT11 Handshake Probe
+//  LCD Initialization (Dedicated on Wire: SDA=17, SCL=18)
 // =====================================================================
-// Sends a 20ms LOW start pulse, releases line with internal pull-up,
-// and checks for the DHT11's unique 80us LOW + 80us HIGH response.
+void initLCD() {
+    if (lcdFound) return;
+
+    pinMode(LCD_SDA_PIN, INPUT_PULLUP);
+    pinMode(LCD_SCL_PIN, INPUT_PULLUP);
+    Wire.begin(LCD_SDA_PIN, LCD_SCL_PIN, 50000);
+    Wire.setTimeOut(25);
+    delay(50);
+
+    byte foundAddr = 0;
+    Wire.beginTransmission(0x27);
+    if (Wire.endTransmission() == 0) foundAddr = 0x27;
+    else {
+        Wire.beginTransmission(0x3F);
+        if (Wire.endTransmission() == 0) foundAddr = 0x3F;
+    }
+
+    if (foundAddr != 0) {
+        lcdAddr = foundAddr;
+        if (pLcd != nullptr) delete pLcd;
+        pLcd = new LiquidCrystal_I2C(lcdAddr, 20, 4);
+        pLcd->init();
+        Wire.begin(LCD_SDA_PIN, LCD_SCL_PIN, 50000); // Re-assert pins
+        pLcd->backlight();
+        pLcd->clear();
+        pLcd->setCursor(0, 0);
+        pLcd->print(F("===================="));
+        pLcd->setCursor(0, 1);
+        pLcd->print(F(" ESP32-S3 GENERIC   "));
+        pLcd->setCursor(0, 2);
+        pLcd->print(F(" SMART SENSOR HUB   "));
+        pLcd->setCursor(0, 3);
+        pLcd->print(F("===================="));
+        lcdFound = true;
+        Serial.printf("  [+] 2004 LCD Initialized on Wire (SDA=%d, SCL=%d) at 0x%02X\n",
+                      LCD_SDA_PIN, LCD_SCL_PIN, lcdAddr);
+    } else {
+        Serial.println(F("  [-] 2004 LCD not detected on Wire (SDA=17, SCL=18)."));
+    }
+}
+
+// =====================================================================
+//  I2C Sensors Initialization (Wire1: BH1750 & CCS811)
+// =====================================================================
+void initI2CSensors() {
+    if (bh1750Found && ccsFound) return;
+
+    for (int p = 0; p < NUM_WIRE1_CANDIDATES; p++) {
+        int sda = WIRE1_CANDIDATES[p].sda;
+        int scl = WIRE1_CANDIDATES[p].scl;
+
+        // Skip pins if currently used by DHT11 or LCD
+        if (dhtPin != -1 && (sda == dhtPin || scl == dhtPin)) continue;
+        if (sda == LCD_SDA_PIN || scl == LCD_SCL_PIN) continue;
+
+        pinMode(sda, INPUT_PULLUP);
+        pinMode(scl, INPUT_PULLUP);
+        Wire1.end();
+        Wire1.begin(sda, scl, 50000);
+        Wire1.setTimeOut(25);
+        delay(20);
+
+        bool foundAny = false;
+
+        // Check BH1750 (0x23, 0x5C)
+        if (!bh1750Found) {
+            byte bhAddr = 0;
+            Wire1.beginTransmission(0x23);
+            if (Wire1.endTransmission() == 0) bhAddr = 0x23;
+            else {
+                Wire1.beginTransmission(0x5C);
+                if (Wire1.endTransmission() == 0) bhAddr = 0x5C;
+            }
+            if (bhAddr != 0) {
+                if (lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, bhAddr, &Wire1)) {
+                    bh1750Found = true;
+                    wire1SDA = sda;
+                    wire1SCL = scl;
+                    foundAny = true;
+                    Serial.printf("  [+] BH1750 Light Sensor Online on Wire1 (%s) at 0x%02X\n",
+                                  WIRE1_CANDIDATES[p].label, bhAddr);
+                }
+            }
+        }
+
+        // Check CCS811 (0x5A)
+        if (!ccsFound) {
+            Wire1.beginTransmission(0x5A);
+            if (Wire1.endTransmission() == 0) {
+                if (ccs.begin(0x5A, &Wire1)) {
+                    ccsFound = true;
+                    wire1SDA = sda;
+                    wire1SCL = scl;
+                    foundAny = true;
+                    Serial.printf("  [+] CCS811 CO2 Sensor Online on Wire1 (%s) at 0x5A\n",
+                                  WIRE1_CANDIDATES[p].label);
+                }
+            }
+        }
+
+        if (foundAny) break; // Locked onto active sensor pair
+    }
+}
+
+// =====================================================================
+//  DHT11 Handshake Probe & Pin Scanner
+// =====================================================================
 bool probeDHT11(int pin) {
     pinMode(pin, OUTPUT);
     digitalWrite(pin, LOW);
@@ -166,165 +266,13 @@ bool probeDHT11(int pin) {
     return true; // Valid DHT11 handshake confirmed!
 }
 
-// =====================================================================
-//  Auto-Discovery: I2C Scanner
-// =====================================================================
-void scanAndInitI2C() {
-    // -------------------------------------------------------------
-    // Step 1: Scan & Lock Primary I2C Bus (Wire) - for LCD on 17/18 etc.
-    // -------------------------------------------------------------
-    if (wireSDA == -1) {
-        for (int p = 0; p < NUM_I2C_CANDIDATES; p++) {
-            int sda = I2C_CANDIDATES[p].sda;
-            int scl = I2C_CANDIDATES[p].scl;
-            if (dhtPin != -1 && (sda == dhtPin || scl == dhtPin)) continue;
-            if (wire1SDA != -1 && (sda == wire1SDA || scl == wire1SCL)) continue;
-
-            pinMode(sda, INPUT_PULLUP);
-            pinMode(scl, INPUT_PULLUP);
-            Wire.end();
-            Wire.begin(sda, scl, 50000);
-            Wire.setTimeOut(25);
-            delay(15);
-
-            bool foundAny = false;
-            // Check LCD (0x27, 0x3F)
-            byte lcdA = 0;
-            Wire.beginTransmission(0x27);
-            if (Wire.endTransmission() == 0) lcdA = 0x27;
-            else {
-                Wire.beginTransmission(0x3F);
-                if (Wire.endTransmission() == 0) lcdA = 0x3F;
-            }
-            if (lcdA != 0 && !lcdFound) {
-                lcdAddr = lcdA;
-                pLcd = new LiquidCrystal_I2C(lcdAddr, 20, 4);
-                pLcd->init();
-                Wire.begin(sda, scl, 50000); // Re-assert pins
-                pLcd->backlight();
-                pLcd->clear();
-                pLcd->setCursor(0, 0);
-                pLcd->print(F("ESP32-S3 GENERIC HUB"));
-                pLcd->setCursor(0, 1);
-                pLcd->print(F("Auto-Detecting...   "));
-                lcdFound = true;
-                foundAny = true;
-                Serial.printf("    [+] 2004 LCD Initialized on Wire (%s) at 0x%02X\n", I2C_CANDIDATES[p].label, lcdAddr);
-            }
-
-            // Check BH1750 (0x23, 0x5C) on Wire
-            if (!bh1750Found) {
-                byte bhA = 0;
-                Wire.beginTransmission(0x23);
-                if (Wire.endTransmission() == 0) bhA = 0x23;
-                else {
-                    Wire.beginTransmission(0x5C);
-                    if (Wire.endTransmission() == 0) bhA = 0x5C;
-                }
-                if (bhA != 0) {
-                    if (lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, bhA, &Wire)) {
-                        bh1750Found = true;
-                        foundAny = true;
-                        Serial.printf("    [+] BH1750 Light Sensor Online on Wire (%s) at 0x%02X\n", I2C_CANDIDATES[p].label, bhA);
-                    }
-                }
-            }
-
-            // Check CCS811 (0x5A) on Wire
-            if (!ccsFound) {
-                Wire.beginTransmission(0x5A);
-                if (Wire.endTransmission() == 0) {
-                    if (ccs.begin(0x5A, &Wire)) {
-                        ccsFound = true;
-                        foundAny = true;
-                        Serial.printf("    [+] CCS811 CO2 Sensor Online on Wire (%s) at 0x5A\n", I2C_CANDIDATES[p].label);
-                    }
-                }
-            }
-
-            if (foundAny) {
-                wireSDA = sda;
-                wireSCL = scl;
-                Serial.printf("    [+] Primary I2C Bus (Wire) LOCKED on %s\n", I2C_CANDIDATES[p].label);
-                break;
-            }
-        }
-    }
-
-    // -------------------------------------------------------------
-    // Step 2: Scan & Lock Secondary I2C Bus (Wire1) - for BH1750 on 15/16 etc.
-    // -------------------------------------------------------------
-    if (!bh1750Found || !ccsFound) {
-        if (wire1SDA == -1) {
-            for (int p = 0; p < NUM_I2C_CANDIDATES; p++) {
-                int sda = I2C_CANDIDATES[p].sda;
-                int scl = I2C_CANDIDATES[p].scl;
-                if (dhtPin != -1 && (sda == dhtPin || scl == dhtPin)) continue;
-                if (wireSDA != -1 && (sda == wireSDA || scl == wireSCL)) continue;
-
-                pinMode(sda, INPUT_PULLUP);
-                pinMode(scl, INPUT_PULLUP);
-                Wire1.end();
-                Wire1.begin(sda, scl, 50000);
-                Wire1.setTimeOut(25);
-                delay(15);
-
-                bool foundAny = false;
-
-                // Check BH1750 on Wire1
-                if (!bh1750Found) {
-                    byte bhA = 0;
-                    Wire1.beginTransmission(0x23);
-                    if (Wire1.endTransmission() == 0) bhA = 0x23;
-                    else {
-                        Wire1.beginTransmission(0x5C);
-                        if (Wire1.endTransmission() == 0) bhA = 0x5C;
-                    }
-                    if (bhA != 0) {
-                        if (lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, bhA, &Wire1)) {
-                            bh1750Found = true;
-                            foundAny = true;
-                            Serial.printf("    [+] BH1750 Light Sensor Online on Wire1 (%s) at 0x%02X\n", I2C_CANDIDATES[p].label, bhA);
-                        }
-                    }
-                }
-
-                // Check CCS811 on Wire1
-                if (!ccsFound) {
-                    Wire1.beginTransmission(0x5A);
-                    if (Wire1.endTransmission() == 0) {
-                        if (ccs.begin(0x5A, &Wire1)) {
-                            ccsFound = true;
-                            foundAny = true;
-                            Serial.printf("    [+] CCS811 CO2 Sensor Online on Wire1 (%s) at 0x5A\n", I2C_CANDIDATES[p].label);
-                        }
-                    }
-                }
-
-                if (foundAny) {
-                    wire1SDA = sda;
-                    wire1SCL = scl;
-                    Serial.printf("    [+] Secondary I2C Bus (Wire1) LOCKED on %s\n", I2C_CANDIDATES[p].label);
-                    break;
-                }
-            }
-        }
-    }
-}
-
-// =====================================================================
-//  Auto-Discovery: DHT11 Pin Scanner
-// =====================================================================
 void scanAndInitDHT() {
-    Serial.println(F("  [>>] Scanning GPIO pins for DHT11 handshake pulse..."));
-
     for (int i = 0; i < NUM_DHT_CANDIDATES; i++) {
         int pin = DHT_CANDIDATES[i];
 
-        // Skip pins already reserved for active I2C buses
-        if (pin == wireSDA || pin == wireSCL || pin == wire1SDA || pin == wire1SCL) {
-            continue;
-        }
+        // Skip pins used by LCD or Wire1
+        if (pin == LCD_SDA_PIN || pin == LCD_SCL_PIN) continue;
+        if (wire1SDA != -1 && (pin == wire1SDA || pin == wire1SCL)) continue;
 
         if (probeDHT11(pin)) {
             dhtPin = pin;
@@ -333,12 +281,10 @@ void scanAndInitDHT() {
             if (pDht != nullptr) delete pDht;
             pDht = new DHT(dhtPin, DHT11);
             pDht->begin();
-            Serial.printf("    [+] DHT11 DETECTED & INITIALIZED on GPIO %d!\n", dhtPin);
+            Serial.printf("  [+] DHT11 DETECTED & INITIALIZED on GPIO %d!\n", dhtPin);
             return;
         }
     }
-
-    Serial.println(F("    [-] DHT11 not detected on candidate pins."));
 }
 
 // =====================================================================
@@ -502,23 +448,20 @@ void setup() {
     Serial.println();
     printLine('=');
     Serial.println(F("  ESP32-S3 GENERIC AUTO-SENSING HUB (PLUG & PLAY)"));
-    Serial.println(F("  Features: Auto Pin Scanner, I2C Auto-Discovery & Cloud"));
+    Serial.println(F("  Architecture: Dual I2C (Wire=LCD, Wire1=Sensors) + Auto DHT"));
     printLine('=');
 
-    // 1. Scan and initialize I2C Devices
-    scanAndInitI2C();
+    // 1. Initialize 2004 LCD on Dedicated Wire (SDA=17, SCL=18)
+    initLCD();
 
-    // 2. Scan and initialize DHT11
+    // 2. Initialize Sensors on Wire1 (SDA=15, SCL=16)
+    initI2CSensors();
+
+    // 3. Scan and initialize DHT11
     scanAndInitDHT();
 
-    // 3. Connect to WiFi
+    // 4. Connect to WiFi
     connectWiFi();
-
-    // 4. Initial LCD splash
-    if (lcdFound && pLcd != nullptr) {
-        delay(1200);
-        updateLCD();
-    }
 
     printLine('=');
     Serial.println(F("  System Initialized. Entering Main Telemetry Loop..."));
@@ -565,7 +508,7 @@ void loop() {
             }
         }
 
-        // 2. Read BH1750 Light (if discovered)
+        // 2. Read BH1750 Light (if discovered on Wire1)
         if (bh1750Found) {
             float lux = lightMeter.readLightLevel();
             if (lux >= 0.0f) {
@@ -573,7 +516,7 @@ void loop() {
             }
         }
 
-        // 3. Read CCS811 CO2 (if discovered)
+        // 3. Read CCS811 CO2 (if discovered on Wire1)
         if (ccsFound) {
             if (ccs.available() && !ccs.readData()) {
                 currentCO2  = ccs.geteCO2();
@@ -602,9 +545,7 @@ void loop() {
 
         // Section: BH1750
         if (bh1750Found) {
-            Serial.printf("  [+] BH1750 [Auto-detected at I2C 0x23 on SDA=%d, SCL=%d]\n",
-                          wire1SDA != -1 ? wire1SDA : wireSDA,
-                          wire1SCL != -1 ? wire1SCL : wireSCL);
+            Serial.printf("  [+] BH1750 [Auto-detected at I2C 0x23 on Wire1 (SDA=%d, SCL=%d)]\n", wire1SDA, wire1SCL);
             Serial.printf("      Light Level : %6.1f Lux\n", currentLux);
         } else {
             Serial.println(F("  [-] BH1750 [NOT CONNECTED / NOT DETECTED]"));
@@ -613,9 +554,7 @@ void loop() {
 
         // Section: CCS811
         if (ccsFound) {
-            Serial.printf("  [+] CCS811 [Auto-detected at I2C 0x5A on SDA=%d, SCL=%d]\n",
-                          wire1SDA != -1 ? wire1SDA : wireSDA,
-                          wire1SCL != -1 ? wire1SCL : wireSCL);
+            Serial.printf("  [+] CCS811 [Auto-detected at I2C 0x5A on Wire1 (SDA=%d, SCL=%d)]\n", wire1SDA, wire1SCL);
             Serial.printf("      eCO2        : %5u ppm\n", currentCO2);
             Serial.printf("      TVOC        : %5u ppb\n", currentTVOC);
         } else {
@@ -639,8 +578,11 @@ void loop() {
     static unsigned long lastAutoScan = 0;
     if (now - lastAutoScan >= 6000) {
         lastAutoScan = now;
-        if (!lcdFound || !bh1750Found || !ccsFound) {
-            scanAndInitI2C();
+        if (!lcdFound) {
+            initLCD();
+        }
+        if (!bh1750Found || !ccsFound) {
+            initI2CSensors();
         }
         if (!dhtFound) {
             scanAndInitDHT();
