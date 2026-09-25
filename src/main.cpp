@@ -63,7 +63,8 @@ const I2CPair WIRE1_CANDIDATES[] = {
 const int NUM_WIRE1_CANDIDATES = sizeof(WIRE1_CANDIDATES) / sizeof(WIRE1_CANDIDATES[0]);
 
 // 3. Universal Candidate GPIOs (All are digital I/O AND ADC1 channels on ESP32-S3)
-const int UNIVERSAL_PINS[] = { 4, 5, 6, 7, 1, 2, 8, 9, 10 };
+// Prioritize GPIO 6 and analog channels, placing 4 last to avoid floating pullup locks
+const int UNIVERSAL_PINS[] = { 6, 5, 1, 2, 7, 8, 9, 10, 4 };
 const int NUM_UNIVERSAL_PINS = sizeof(UNIVERSAL_PINS) / sizeof(UNIVERSAL_PINS[0]);
 
 // Soil Moisture Calibration Constants
@@ -345,8 +346,9 @@ bool probeSoilSensor(int pin, int& detectedADC) {
 
     detectedADC = pdVal;
 
-    // Genuine active sensor maintains a steady DC level >= 600 under pulldown
-    if (pdVal >= 600 && pdVal <= 3900) {
+    // Genuine active capacitive soil sensor outputs between 900 (water) and 3500 (dry air).
+    // Saturated 4095/3800+ pins (like floating GPIO 4) are strictly rejected!
+    if (pdVal >= 900 && pdVal <= 3500) {
         return true;
     }
     return false;
@@ -372,9 +374,10 @@ void scanAndInitSoil() {
 
         Serial.printf("GPIO%d=%d ", pin, adcVal);
 
-        if (isSoil && adcVal > bestVal) {
+        if (isSoil) {
             bestPin = pin;
             bestVal = adcVal;
+            break; // Stop and lock immediately onto this pin!
         }
     }
     Serial.println();
