@@ -47,11 +47,18 @@ struct I2CPair {
 
 // Candidate I2C pin pairs on ESP32-S3
 const I2CPair I2C_CANDIDATES[] = {
-    { 17, 18, "SDA=17, SCL=18" },
     { 15, 16, "SDA=15, SCL=16" },
+    { 16, 15, "SDA=16, SCL=15" },
+    { 17, 18, "SDA=17, SCL=18" },
+    { 18, 17, "SDA=18, SCL=17" },
     { 8,  9,  "SDA=8,  SCL=9"  },
+    { 9,  8,  "SDA=9,  SCL=8"  },
     { 1,  2,  "SDA=1,  SCL=2"  },
-    { 4,  5,  "SDA=4,  SCL=5"  }
+    { 2,  1,  "SDA=2,  SCL=1"  },
+    { 4,  5,  "SDA=4,  SCL=5"  },
+    { 5,  4,  "SDA=5,  SCL=4"  },
+    { 6,  7,  "SDA=6,  SCL=7"  },
+    { 7,  6,  "SDA=7,  SCL=6"  }
 };
 const int NUM_I2C_CANDIDATES = sizeof(I2C_CANDIDATES) / sizeof(I2C_CANDIDATES[0]);
 
@@ -219,12 +226,15 @@ void scanAndInitI2C() {
         int sda = I2C_CANDIDATES[p].sda;
         int scl = I2C_CANDIDATES[p].scl;
 
+        // Skip pins if currently assigned to DHT11
+        if (dhtPin != -1 && (sda == dhtPin || scl == dhtPin)) continue;
+
         pinMode(sda, INPUT_PULLUP);
         pinMode(scl, INPUT_PULLUP);
         Wire.end();
         Wire.begin(sda, scl, 50000); // 50kHz for rock-solid stability
         Wire.setTimeOut(25);
-        delay(20);
+        delay(15);
 
         int devicesOnThisPair = 0;
         bool hasLCD = false, hasBH = false, hasCCS = false;
