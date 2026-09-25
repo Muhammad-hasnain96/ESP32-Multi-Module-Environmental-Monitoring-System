@@ -323,39 +323,41 @@ void scanAndInitDHT() {
 // =====================================================================
 //  Capacitive Soil Moisture Probe & Scanner (Analog ADC1)
 // =====================================================================
-bool probeSoilSensor(int pin) {
+bool probeSoilSensor(int pin, int& detectedADC) {
     // If pin is used by LCD, Wire1, or active DHT, skip
     if (pin == LCD_SDA_PIN || pin == LCD_SCL_PIN) return false;
     if (wire1SDA != -1 && (pin == wire1SDA || pin == wire1SCL)) return false;
     if (dhtFound && pin == dhtPin) return false;
 
-    // Electrical signature check:
-    // Floating pin pulled down drops to 0. Active soil sensor output (~1.0V-2.8V)
-    // overcomes internal pull-down resistor and stays within 800 - 3500 ADC counts.
-    pinMode(pin, INPUT_PULLDOWN);
-    delay(10);
-    int pdVal = analogRead(pin);
-    pinMode(pin, INPUT);
-    delay(5);
-    int normVal = analogRead(pin);
+    // Read 8 analog samples
+    long sum = 0;
+    int minV = 4095;
+    int maxV = 0;
+    for (int k = 0; k < 8; k++) {
+        int v = analogRead(pin);
+        sum += v;
+        if (v < minV) minV = v;
+        if (v > maxV) maxV = v;
+        delay(3);
+    }
+    int avg = sum / 8;
+    detectedADC = avg;
 
-    if (pdVal >= 800 && pdVal <= 3500 && normVal >= 800 && normVal <= 3500) {
-        // Average 5 samples to confirm steady analog DC
-        long sum = 0;
-        for (int k = 0; k < 5; k++) {
-            sum += analogRead(pin);
-            delay(3);
-        }
-        int avg = sum / 5;
-        if (avg >= 800 && avg <= 3500) {
-            return true;
-        }
+    // A valid powered capacitive sensor (air: ~2500-3900, water: ~1100-2200)
+    // has a steady DC voltage with low jitter (< 300 counts) and sits within 600 - 3980.
+    // Unconnected / floating pins drift widely or sit near 0 (< 300).
+    if (avg >= 600 && avg <= 3980 && (maxV - minV) < 300) {
+        return true;
     }
     return false;
 }
 
 void scanAndInitSoil() {
     if (soilFound) return;
+
+    Serial.print(F("  [>>] Scanning Universal Pins for Soil Moisture: "));
+    int foundPin = -1;
+    int foundVal = 0;
 
     for (int i = 0; i < NUM_UNIVERSAL_PINS; i++) {
         int pin = UNIVERSAL_PINS[i];
@@ -365,13 +367,27 @@ void scanAndInitSoil() {
         if (wire1SDA != -1 && (pin == wire1SDA || pin == wire1SCL)) continue;
         if (dhtFound && pin == dhtPin) continue;
 
-        if (probeSoilSensor(pin)) {
-            soilPin = pin;
-            soilFound = true;
-            soilFailCount = 0;
-            Serial.printf("  [+] CAPACITIVE SOIL MOISTURE SENSOR DETECTED on GPIO %d!\n", soilPin);
-            return;
+        int adcVal = 0;
+        bool isSoil = probeSoilSensor(pin, adcVal);
+
+        Serial.printf("GPIO%d=%d ", pin, adcVal);
+
+        if (isSoil && foundPin == -1) {
+            foundPin = pin;
+            foundVal = adcVal;
         }
+    }
+    Serial.println();
+
+    if (foundPin != -1) {
+        soilPin = foundPin;
+        soilFound = true;
+        soilFailCount = 0;
+        currentSoilRaw = foundVal;
+        currentSoilVolt = (foundVal / 4095.0f) * 3.3f;
+        float pct = ((float)(SOIL_AIR_VALUE - foundVal) / (float)(SOIL_AIR_VALUE - SOIL_WATER_VALUE)) * 100.0f;
+        currentSoilPct = constrain(pct, 0.0f, 100.0f);
+        Serial.printf("  [+] CAPACITIVE SOIL MOISTURE SENSOR DETECTED on GPIO %d (ADC: %d)!\n", soilPin, foundVal);
     }
 }
 
@@ -608,7 +624,6 @@ void loop() {
 
         // 2. Read Capacitive Soil Moisture Sensor (if discovered)
         if (soilFound && soilPin != -1) {
-            // Read 10 samples and average
             long sum = 0;
             for (int k = 0; k < 10; k++) {
                 sum += analogRead(soilPin);
@@ -616,15 +631,9 @@ void loop() {
             }
             int raw = sum / 10;
 
-            // Verify pin is still actively driven (hot-unplug check)
-            pinMode(soilPin, INPUT_PULLDOWN);
-            delay(2);
-            int pdCheck = analogRead(soilPin);
-            pinMode(soilPin, INPUT);
-
-            if (pdCheck < 500 || raw > 3800) {
+            if (raw < 400 || raw > 4050) {
                 soilFailCount++;
-                if (soilFailCount >= 2) {
+                if (soilFailCount >= 3) {
                     Serial.printf("  [!] Soil Moisture Sensor UNPLUGGED from GPIO %d! Re-enabling auto scan...\n", soilPin);
                     soilFound = false;
                     soilPin = -1;
