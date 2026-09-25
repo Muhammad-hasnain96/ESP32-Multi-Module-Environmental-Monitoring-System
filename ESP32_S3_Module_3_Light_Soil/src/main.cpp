@@ -25,11 +25,14 @@
 //      - VCC   -> 5V (VIN)
 //      - GND   -> GND
 //
-//   5. 4-Channel 5V Relay Module (Fan Control):
+//   5. 4-Channel 5V Relay Module (Fan & Actuator Control):
 //      - IN1   -> GPIO 7   (Active-LOW: LOW=ON, HIGH=OFF)
+//      - IN2   -> GPIO 6   (Active-LOW: LOW=ON, HIGH=OFF)
+//      - IN3   -> GPIO 5   (Active-LOW: LOW=ON, HIGH=OFF)
+//      - IN4   -> GPIO 8   (Active-LOW: LOW=ON, HIGH=OFF)
 //      - VCC   -> 5V (VIN)
 //      - GND   -> GND
-//      - COM / NO -> Fan Power Circuit (Turns ON at >=30°C, OFF at <27°C)
+//      - All 4 Channels Turn ON at >=30°C, OFF at <27°C
 //
 //   [COMMENTED / OPTIONAL] 6. HX711 5kg Load Cell:
 //      - DT    -> GPIO 14
@@ -87,16 +90,29 @@ LiquidCrystal_I2C lcd(0x27, 20, 4);
 bool lcd_available = false;
 
 // =====================================================================
-//  5. Cooling Fan Relay Configuration (GPIO 7 - Active LOW)
+//  5. 4-Channel 5V Relay Configuration (Active LOW)
 // =====================================================================
-#define RELAY_FAN_PIN         7
+#define RELAY_IN1_PIN         7   // Channel 1
+#define RELAY_IN2_PIN         6   // Channel 2
+#define RELAY_IN3_PIN         5   // Channel 3
+#define RELAY_IN4_PIN         8   // Channel 4
+
 #define RELAY_ON              LOW   // Optocoupler relay turns ON on LOW
 #define RELAY_OFF             HIGH  // Optocoupler relay turns OFF on HIGH
 
 // Temperature Hysteresis Thresholds
 const float TEMP_FAN_ON_THRESH  = 30.0f; // Turn ON when >= 30.0 °C
 const float TEMP_FAN_OFF_THRESH = 27.0f; // Turn OFF when < 27.0 °C
-bool fanState = false;                  // Current fan operational state
+bool fanState = false;                  // Current relay / fan operational state
+
+void setAllRelays(bool state) {
+    fanState = state;
+    uint8_t level = state ? RELAY_ON : RELAY_OFF;
+    digitalWrite(RELAY_IN1_PIN, level);
+    digitalWrite(RELAY_IN2_PIN, level);
+    digitalWrite(RELAY_IN3_PIN, level);
+    digitalWrite(RELAY_IN4_PIN, level);
+}
 
 // =====================================================================
 //  [COMMENTED] HX711 Load Cell Configuration
@@ -264,9 +280,13 @@ void sendTelemetry(float tC, float tF, float hum, float hi,
     p += ",\"soilVoltage\":"   + String(soilV, 3);
     p += ",\"soilRawADC\":"    + String(soilADC);
     p += ",\"soilStatus\":\""   + String(soilLv) + "\"";
-    // Cooling Fan Relay
+    // 4-Channel Relays
     p += ",\"fan_status\":\""   + String(fanOn ? "ON" : "OFF") + "\"";
     p += ",\"relay_fan\":"      + String(fanOn ? "true" : "false");
+    p += ",\"relay_in1\":"      + String(fanOn ? "true" : "false");
+    p += ",\"relay_in2\":"      + String(fanOn ? "true" : "false");
+    p += ",\"relay_in3\":"      + String(fanOn ? "true" : "false");
+    p += ",\"relay_in4\":"      + String(fanOn ? "true" : "false");
     p += "}";
 
     int code = https.POST(p);
@@ -289,7 +309,7 @@ void setup() {
     Serial.println(F("  ESP32-S3 — MODULE 3: COMPLETE LIGHT, SOIL & ENVIRONMENT"));
     printLine('=');
     Serial.println(F("  Sensors : DHT11 (GPIO 4) | BH1750 (Wire1: SDA=15, SCL=16) | Soil (GPIO 1)"));
-    Serial.println(F("  Actuator: Cooling Fan Relay (GPIO 7, ON>=30.0C, OFF<27.0C)"));
+    Serial.println(F("  Actuator: 4-Ch Relays (IN1:7, IN2:6, IN3:5, IN4:8, ON>=30.0C, OFF<27.0C)"));
     Serial.println(F("  Display : 2004 I2C LCD (Wire: SDA=17, SCL=18)"));
     Serial.println(F("  Cloud   : ThingsBoard"));
     printLine('=');
@@ -304,11 +324,13 @@ void setup() {
     pinMode(SOIL_PIN, INPUT);
     Serial.println(F("  [OK] Soil Moisture Sensor on GPIO 1 (ADC1_CH0)"));
 
-    // 3. Initialize Cooling Fan Relay (GPIO 7 - Active LOW, default OFF)
-    pinMode(RELAY_FAN_PIN, OUTPUT);
-    digitalWrite(RELAY_FAN_PIN, RELAY_OFF);
-    fanState = false;
-    Serial.println(F("  [OK] Cooling Fan Relay on GPIO 7 (Default OFF)"));
+    // 3. Initialize 4-Channel Relays (IN1=7, IN2=6, IN3=5, IN4=8 - Active LOW, default OFF)
+    pinMode(RELAY_IN1_PIN, OUTPUT);
+    pinMode(RELAY_IN2_PIN, OUTPUT);
+    pinMode(RELAY_IN3_PIN, OUTPUT);
+    pinMode(RELAY_IN4_PIN, OUTPUT);
+    setAllRelays(false);
+    Serial.println(F("  [OK] 4-Channel Relays on GPIO 7, 6, 5, 8 (Default OFF)"));
 
     // 3. Initialize 2004 I2C LCD on Dedicated Wire (SDA=17, SCL=18)
     delay(100); // Allow LCD power to stabilize
@@ -422,17 +444,15 @@ void loop() {
     float hi = dht.computeHeatIndex(tC, hum, false);
 
     // -------------------------------------------------------------
-    // Cooling Fan Control Logic (Hysteresis: ON >= 30.0C, OFF < 27.0C)
+    // Cooling Fan & 4-Channel Relay Control Logic (Hysteresis: ON >= 30.0C, OFF < 27.0C)
     // -------------------------------------------------------------
     if (dhtOK) {
         if (!fanState && tC >= TEMP_FAN_ON_THRESH) {
-            fanState = true;
-            digitalWrite(RELAY_FAN_PIN, RELAY_ON);
-            Serial.println(F("  [!] TEMP >= 30.0C -> FAN RELAY [ON]"));
+            setAllRelays(true);
+            Serial.println(F("  [!] TEMP >= 30.0C -> ALL 4 RELAYS (IN1..IN4) TURNED [ON]"));
         } else if (fanState && tC < TEMP_FAN_OFF_THRESH) {
-            fanState = false;
-            digitalWrite(RELAY_FAN_PIN, RELAY_OFF);
-            Serial.println(F("  [!] TEMP < 27.0C -> FAN RELAY [OFF]"));
+            setAllRelays(false);
+            Serial.println(F("  [!] TEMP < 27.0C -> ALL 4 RELAYS (IN1..IN4) TURNED [OFF]"));
         }
     }
 
@@ -481,11 +501,11 @@ void loop() {
     }
     printLine();
 
-    // Section 2: Cooling Fan Relay
-    Serial.printf("  COOLING FAN RELAY  [IN1 -> GPIO 7]  [%s]\n", fanState ? "FAN ON" : "FAN OFF");
+    // Section 2: 4-Channel Relays (IN1=7, IN2=6, IN3=5, IN4=8)
+    Serial.printf("  4-CHANNEL RELAYS  [IN1:7, IN2:6, IN3:5, IN4:8]  [%s]\n", fanState ? "ALL ON" : "ALL OFF");
     printLine();
-    Serial.printf("    Fan Status   :  %s  (Pin Level: %s)\n",
-                  fanState ? "ACTIVE (Fan Running)" : "STANDBY (Fan Stopped)",
+    Serial.printf("    Relays State :  %s  (Pin Levels: %s)\n",
+                  fanState ? "ACTIVE (All 4 Relays ON)" : "STANDBY (All 4 Relays OFF)",
                   fanState ? "LOW (Active)" : "HIGH (Inactive)");
     Serial.printf("    Control Rule :  Turn ON >= %.1f C  |  Turn OFF < %.1f C\n",
                   TEMP_FAN_ON_THRESH, TEMP_FAN_OFF_THRESH);

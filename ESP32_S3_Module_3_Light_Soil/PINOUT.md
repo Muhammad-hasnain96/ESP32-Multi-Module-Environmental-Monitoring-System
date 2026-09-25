@@ -19,8 +19,11 @@
 | (20x4 Character Screen) | `SCL` | **`GPIO 18`** | — | Dedicated I2C Bus (`Wire`) |
 | | `VCC` | `5V (VIN)` | — | Power (5V required for crisp contrast & backlight) |
 | | `GND` | `GND` | — | Common Ground |
-| **4-Channel 5V Relay** | `IN1` | **`GPIO 7`** | — | Fan Control Trigger (Active-LOW: `LOW`=ON, `HIGH`=OFF) |
-| (Optocoupler Isolated) | `VCC` | **`5V (VIN)`** | `5V` | Relay coil & optocoupler logic power |
+| **4-Channel 5V Relay** | `IN1` | **`GPIO 7`** | — | Channel 1 Trigger (Active-LOW: `LOW`=ON, `HIGH`=OFF) |
+| (Optocoupler Isolated) | `IN2` | **`GPIO 6`** | — | Channel 2 Trigger (Active-LOW: `LOW`=ON, `HIGH`=OFF) |
+| | `IN3` | **`GPIO 5`** | — | Channel 3 Trigger (Active-LOW: `LOW`=ON, `HIGH`=OFF) |
+| | `IN4` | **`GPIO 8`** | — | Channel 4 Trigger (Active-LOW: `LOW`=ON, `HIGH`=OFF) |
+| | `VCC` | **`5V (VIN)`** | `5V` | Relay coils & optocoupler logic power |
 | | `GND` | **`GND`** | — | Common Ground with ESP32-S3 |
 
 ---
