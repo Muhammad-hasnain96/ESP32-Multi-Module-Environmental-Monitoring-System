@@ -56,9 +56,7 @@ struct I2CPair {
 
 const I2CPair WIRE1_CANDIDATES[] = {
     { 15, 16, "SDA=15, SCL=16" },
-    { 16, 15, "SDA=16, SCL=15" },
-    { 8,  9,  "SDA=8,  SCL=9"  },
-    { 1,  2,  "SDA=1,  SCL=2"  }
+    { 16, 15, "SDA=16, SCL=15" }
 };
 const int NUM_WIRE1_CANDIDATES = sizeof(WIRE1_CANDIDATES) / sizeof(WIRE1_CANDIDATES[0]);
 
@@ -67,8 +65,8 @@ const int NUM_WIRE1_CANDIDATES = sizeof(WIRE1_CANDIDATES) / sizeof(WIRE1_CANDIDA
 const int UNIVERSAL_PINS[] = { 6, 5, 1, 2, 7, 8, 9, 10, 4 };
 const int NUM_UNIVERSAL_PINS = sizeof(UNIVERSAL_PINS) / sizeof(UNIVERSAL_PINS[0]);
 
-// Soil Moisture Calibration Constants
-const int SOIL_AIR_VALUE   = 3000; // Dry air (0% moisture)
+// Soil Moisture Calibration Constants (Verified live: 2800 in air)
+const int SOIL_AIR_VALUE   = 2800; // Dry air (0% moisture)
 const int SOIL_WATER_VALUE = 1350; // In water / fully saturated (100% moisture)
 
 // =====================================================================
@@ -142,7 +140,7 @@ void initLCD() {
     if (lcdFound) return;
 
     const int LCD_PAIRS[][2] = {
-        {17, 18}, {15, 18}, {18, 17}, {8, 9}, {1, 2}
+        {17, 18}, {18, 17}
     };
     const int NUM_LCD_PAIRS = sizeof(LCD_PAIRS) / sizeof(LCD_PAIRS[0]);
 
@@ -197,6 +195,34 @@ void initLCD() {
 // =====================================================================
 void initI2CSensors() {
     if (bh1750Found && ccsFound) return;
+
+    // If Wire1 is already active on a pin pair, stay on that pair and only check missing sensors
+    if (wire1SDA != -1 && wire1SCL != -1) {
+        if (!bh1750Found) {
+            byte bhAddr = 0;
+            Wire1.beginTransmission(0x23);
+            if (Wire1.endTransmission() == 0) bhAddr = 0x23;
+            else {
+                Wire1.beginTransmission(0x5C);
+                if (Wire1.endTransmission() == 0) bhAddr = 0x5C;
+            }
+            if (bhAddr != 0) {
+                if (lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, bhAddr, &Wire1)) {
+                    bh1750Found = true;
+                    bh1750FailCount = 0;
+                }
+            }
+        }
+        if (!ccsFound) {
+            Wire1.beginTransmission(0x5A);
+            if (Wire1.endTransmission() == 0) {
+                if (ccs.begin(0x5A, &Wire1)) {
+                    ccsFound = true;
+                }
+            }
+        }
+        return;
+    }
 
     for (int p = 0; p < NUM_WIRE1_CANDIDATES; p++) {
         int sda = WIRE1_CANDIDATES[p].sda;
