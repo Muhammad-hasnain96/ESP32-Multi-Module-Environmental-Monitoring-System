@@ -69,9 +69,9 @@ const int NUM_DHT_CANDIDATES = sizeof(DHT_CANDIDATES) / sizeof(DHT_CANDIDATES[0]
 // =====================================================================
 //  Global Sensor State & Pointers
 // =====================================================================
-// 1. I2C Bus Active Pins
-int activeI2C_SDA = -1;
-int activeI2C_SCL = -1;
+// 1. Dual Hardware I2C Buses (Wire & Wire1)
+int wireSDA = -1, wireSCL = -1;
+int wire1SDA = -1, wire1SCL = -1;
 
 // 2. 2004 LCD Display
 LiquidCrystal_I2C* pLcd = nullptr;
@@ -170,105 +170,37 @@ bool probeDHT11(int pin) {
 //  Auto-Discovery: I2C Scanner
 // =====================================================================
 void scanAndInitI2C() {
-    // 1. If Primary I2C bus is already locked, DO NOT reset it! Simply check missing devices.
-    if (activeI2C_SDA != -1) {
-        if (!bh1750Found) {
-            Wire.beginTransmission(0x23);
-            if (Wire.endTransmission() == 0) {
-                if (lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, 0x23, &Wire)) {
-                    bh1750Found = true;
-                    Serial.println(F("    [+] BH1750 Light Sensor Online at 0x23 (Wire)"));
-                }
-            } else {
-                Wire.beginTransmission(0x5C);
-                if (Wire.endTransmission() == 0) {
-                    if (lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, 0x5C, &Wire)) {
-                        bh1750Found = true;
-                        Serial.println(F("    [+] BH1750 Light Sensor Online at 0x5C (Wire)"));
-                    }
-                }
-            }
-        }
-        if (!ccsFound) {
-            Wire.beginTransmission(0x5A);
-            if (Wire.endTransmission() == 0) {
-                if (ccs.begin(0x5A, &Wire)) {
-                    ccsFound = true;
-                    Serial.println(F("    [+] CCS811 CO2/TVOC Sensor Online at 0x5A (Wire)"));
-                }
-            }
-        }
-        if (!lcdFound) {
-            byte foundLcd = 0;
+    // -------------------------------------------------------------
+    // Step 1: Scan & Lock Primary I2C Bus (Wire) - for LCD on 17/18 etc.
+    // -------------------------------------------------------------
+    if (wireSDA == -1) {
+        for (int p = 0; p < NUM_I2C_CANDIDATES; p++) {
+            int sda = I2C_CANDIDATES[p].sda;
+            int scl = I2C_CANDIDATES[p].scl;
+            if (dhtPin != -1 && (sda == dhtPin || scl == dhtPin)) continue;
+            if (wire1SDA != -1 && (sda == wire1SDA || scl == wire1SCL)) continue;
+
+            pinMode(sda, INPUT_PULLUP);
+            pinMode(scl, INPUT_PULLUP);
+            Wire.end();
+            Wire.begin(sda, scl, 50000);
+            Wire.setTimeOut(25);
+            delay(15);
+
+            bool foundAny = false;
+            // Check LCD (0x27, 0x3F)
+            byte lcdA = 0;
             Wire.beginTransmission(0x27);
-            if (Wire.endTransmission() == 0) foundLcd = 0x27;
+            if (Wire.endTransmission() == 0) lcdA = 0x27;
             else {
                 Wire.beginTransmission(0x3F);
-                if (Wire.endTransmission() == 0) foundLcd = 0x3F;
+                if (Wire.endTransmission() == 0) lcdA = 0x3F;
             }
-            if (foundLcd != 0) {
-                lcdAddr = foundLcd;
-                pLcd = new LiquidCrystal_I2C(lcdAddr, 20, 4);
-                pLcd->init(); pLcd->backlight(); pLcd->clear();
-                lcdFound = true;
-                Serial.printf("    [+] 2004 LCD Initialized at 0x%02X (Wire)\n", lcdAddr);
-            }
-        }
-        return;
-    }
-
-    // 2. Initial discovery: Scan candidate pairs with internal pull-ups enabled
-    Serial.println(F("  [>>] Scanning candidate pin pairs for I2C devices..."));
-    const uint8_t TARGET_ADDRS[] = { 0x27, 0x3F, 0x23, 0x5C, 0x5A, 0x5B };
-    const int NUM_TARGETS = sizeof(TARGET_ADDRS) / sizeof(TARGET_ADDRS[0]);
-
-    for (int p = 0; p < NUM_I2C_CANDIDATES; p++) {
-        int sda = I2C_CANDIDATES[p].sda;
-        int scl = I2C_CANDIDATES[p].scl;
-
-        // Skip pins if currently assigned to DHT11
-        if (dhtPin != -1 && (sda == dhtPin || scl == dhtPin)) continue;
-
-        pinMode(sda, INPUT_PULLUP);
-        pinMode(scl, INPUT_PULLUP);
-        Wire.end();
-        Wire.begin(sda, scl, 50000); // 50kHz for rock-solid stability
-        Wire.setTimeOut(25);
-        delay(15);
-
-        int devicesOnThisPair = 0;
-        bool hasLCD = false, hasBH = false, hasCCS = false;
-        uint8_t foundLcdAddr = 0, foundBhAddr = 0x23;
-
-        for (int i = 0; i < NUM_TARGETS; i++) {
-            uint8_t addr = TARGET_ADDRS[i];
-            Wire.beginTransmission(addr);
-            if (Wire.endTransmission() == 0) {
-                devicesOnThisPair++;
-                if (addr == 0x27 || addr == 0x3F) {
-                    hasLCD = true;
-                    foundLcdAddr = addr;
-                } else if (addr == 0x23 || addr == 0x5C) {
-                    hasBH = true;
-                    foundBhAddr = addr;
-                } else if (addr == 0x5A || addr == 0x5B) {
-                    hasCCS = true;
-                }
-            }
-        }
-
-        if (devicesOnThisPair > 0) {
-            activeI2C_SDA = sda;
-            activeI2C_SCL = scl;
-            Serial.printf("    [+] I2C Bus LOCKED on %s (%d device%s found)\n",
-                          I2C_CANDIDATES[p].label, devicesOnThisPair,
-                          devicesOnThisPair > 1 ? "s" : "");
-
-            // Initialize LCD if detected
-            if (hasLCD && !lcdFound) {
-                lcdAddr = foundLcdAddr;
+            if (lcdA != 0 && !lcdFound) {
+                lcdAddr = lcdA;
                 pLcd = new LiquidCrystal_I2C(lcdAddr, 20, 4);
                 pLcd->init();
+                Wire.begin(sda, scl, 50000); // Re-assert pins
                 pLcd->backlight();
                 pLcd->clear();
                 pLcd->setCursor(0, 0);
@@ -276,30 +208,107 @@ void scanAndInitI2C() {
                 pLcd->setCursor(0, 1);
                 pLcd->print(F("Auto-Detecting...   "));
                 lcdFound = true;
-                Serial.printf("        -> 2004 LCD Initialized at 0x%02X\n", lcdAddr);
+                foundAny = true;
+                Serial.printf("    [+] 2004 LCD Initialized on Wire (%s) at 0x%02X\n", I2C_CANDIDATES[p].label, lcdAddr);
             }
 
-            // Initialize BH1750 if detected
-            if (hasBH && !bh1750Found) {
-                if (lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, foundBhAddr, &Wire)) {
-                    bh1750Found = true;
-                    Serial.printf("        -> BH1750 Light Sensor Online at 0x%02X\n", foundBhAddr);
+            // Check BH1750 (0x23, 0x5C) on Wire
+            if (!bh1750Found) {
+                byte bhA = 0;
+                Wire.beginTransmission(0x23);
+                if (Wire.endTransmission() == 0) bhA = 0x23;
+                else {
+                    Wire.beginTransmission(0x5C);
+                    if (Wire.endTransmission() == 0) bhA = 0x5C;
+                }
+                if (bhA != 0) {
+                    if (lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, bhA, &Wire)) {
+                        bh1750Found = true;
+                        foundAny = true;
+                        Serial.printf("    [+] BH1750 Light Sensor Online on Wire (%s) at 0x%02X\n", I2C_CANDIDATES[p].label, bhA);
+                    }
                 }
             }
 
-            // Initialize CCS811 if detected
-            if (hasCCS && !ccsFound) {
-                if (ccs.begin(0x5A, &Wire)) {
-                    ccsFound = true;
-                    Serial.println(F("        -> CCS811 CO2/TVOC Sensor Online at 0x5A"));
+            // Check CCS811 (0x5A) on Wire
+            if (!ccsFound) {
+                Wire.beginTransmission(0x5A);
+                if (Wire.endTransmission() == 0) {
+                    if (ccs.begin(0x5A, &Wire)) {
+                        ccsFound = true;
+                        foundAny = true;
+                        Serial.printf("    [+] CCS811 CO2 Sensor Online on Wire (%s) at 0x5A\n", I2C_CANDIDATES[p].label);
+                    }
                 }
             }
-            break; // Active I2C pair selected
+
+            if (foundAny) {
+                wireSDA = sda;
+                wireSCL = scl;
+                Serial.printf("    [+] Primary I2C Bus (Wire) LOCKED on %s\n", I2C_CANDIDATES[p].label);
+                break;
+            }
         }
     }
 
-    if (activeI2C_SDA == -1) {
-        Serial.println(F("    [-] No I2C devices detected on any candidate pair."));
+    // -------------------------------------------------------------
+    // Step 2: Scan & Lock Secondary I2C Bus (Wire1) - for BH1750 on 15/16 etc.
+    // -------------------------------------------------------------
+    if (!bh1750Found || !ccsFound) {
+        if (wire1SDA == -1) {
+            for (int p = 0; p < NUM_I2C_CANDIDATES; p++) {
+                int sda = I2C_CANDIDATES[p].sda;
+                int scl = I2C_CANDIDATES[p].scl;
+                if (dhtPin != -1 && (sda == dhtPin || scl == dhtPin)) continue;
+                if (wireSDA != -1 && (sda == wireSDA || scl == wireSCL)) continue;
+
+                pinMode(sda, INPUT_PULLUP);
+                pinMode(scl, INPUT_PULLUP);
+                Wire1.end();
+                Wire1.begin(sda, scl, 50000);
+                Wire1.setTimeOut(25);
+                delay(15);
+
+                bool foundAny = false;
+
+                // Check BH1750 on Wire1
+                if (!bh1750Found) {
+                    byte bhA = 0;
+                    Wire1.beginTransmission(0x23);
+                    if (Wire1.endTransmission() == 0) bhA = 0x23;
+                    else {
+                        Wire1.beginTransmission(0x5C);
+                        if (Wire1.endTransmission() == 0) bhA = 0x5C;
+                    }
+                    if (bhA != 0) {
+                        if (lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, bhA, &Wire1)) {
+                            bh1750Found = true;
+                            foundAny = true;
+                            Serial.printf("    [+] BH1750 Light Sensor Online on Wire1 (%s) at 0x%02X\n", I2C_CANDIDATES[p].label, bhA);
+                        }
+                    }
+                }
+
+                // Check CCS811 on Wire1
+                if (!ccsFound) {
+                    Wire1.beginTransmission(0x5A);
+                    if (Wire1.endTransmission() == 0) {
+                        if (ccs.begin(0x5A, &Wire1)) {
+                            ccsFound = true;
+                            foundAny = true;
+                            Serial.printf("    [+] CCS811 CO2 Sensor Online on Wire1 (%s) at 0x5A\n", I2C_CANDIDATES[p].label);
+                        }
+                    }
+                }
+
+                if (foundAny) {
+                    wire1SDA = sda;
+                    wire1SCL = scl;
+                    Serial.printf("    [+] Secondary I2C Bus (Wire1) LOCKED on %s\n", I2C_CANDIDATES[p].label);
+                    break;
+                }
+            }
+        }
     }
 }
 
@@ -312,8 +321,8 @@ void scanAndInitDHT() {
     for (int i = 0; i < NUM_DHT_CANDIDATES; i++) {
         int pin = DHT_CANDIDATES[i];
 
-        // Skip pins already reserved for active I2C bus
-        if (pin == activeI2C_SDA || pin == activeI2C_SCL) {
+        // Skip pins already reserved for active I2C buses
+        if (pin == wireSDA || pin == wireSCL || pin == wire1SDA || pin == wire1SCL) {
             continue;
         }
 
@@ -593,7 +602,9 @@ void loop() {
 
         // Section: BH1750
         if (bh1750Found) {
-            Serial.printf("  [+] BH1750 [Auto-detected at I2C 0x23 on SDA=%d, SCL=%d]\n", activeI2C_SDA, activeI2C_SCL);
+            Serial.printf("  [+] BH1750 [Auto-detected at I2C 0x23 on SDA=%d, SCL=%d]\n",
+                          wire1SDA != -1 ? wire1SDA : wireSDA,
+                          wire1SCL != -1 ? wire1SCL : wireSCL);
             Serial.printf("      Light Level : %6.1f Lux\n", currentLux);
         } else {
             Serial.println(F("  [-] BH1750 [NOT CONNECTED / NOT DETECTED]"));
@@ -602,7 +613,9 @@ void loop() {
 
         // Section: CCS811
         if (ccsFound) {
-            Serial.printf("  [+] CCS811 [Auto-detected at I2C 0x5A on SDA=%d, SCL=%d]\n", activeI2C_SDA, activeI2C_SCL);
+            Serial.printf("  [+] CCS811 [Auto-detected at I2C 0x5A on SDA=%d, SCL=%d]\n",
+                          wire1SDA != -1 ? wire1SDA : wireSDA,
+                          wire1SCL != -1 ? wire1SCL : wireSCL);
             Serial.printf("      eCO2        : %5u ppm\n", currentCO2);
             Serial.printf("      TVOC        : %5u ppb\n", currentTVOC);
         } else {
