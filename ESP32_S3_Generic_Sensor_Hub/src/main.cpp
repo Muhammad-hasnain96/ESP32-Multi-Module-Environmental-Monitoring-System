@@ -163,10 +163,55 @@ bool probeDHT11(int pin) {
 //  Auto-Discovery: I2C Scanner
 // =====================================================================
 void scanAndInitI2C() {
-    Serial.println(F("  [>>] Scanning candidate pin pairs for I2C devices..."));
+    // 1. If Primary I2C bus is already locked, DO NOT reset it! Simply check missing devices.
+    if (activeI2C_SDA != -1) {
+        if (!bh1750Found) {
+            Wire.beginTransmission(0x23);
+            if (Wire.endTransmission() == 0) {
+                if (lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, 0x23, &Wire)) {
+                    bh1750Found = true;
+                    Serial.println(F("    [+] BH1750 Light Sensor Online at 0x23 (Wire)"));
+                }
+            } else {
+                Wire.beginTransmission(0x5C);
+                if (Wire.endTransmission() == 0) {
+                    if (lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, 0x5C, &Wire)) {
+                        bh1750Found = true;
+                        Serial.println(F("    [+] BH1750 Light Sensor Online at 0x5C (Wire)"));
+                    }
+                }
+            }
+        }
+        if (!ccsFound) {
+            Wire.beginTransmission(0x5A);
+            if (Wire.endTransmission() == 0) {
+                if (ccs.begin(0x5A, &Wire)) {
+                    ccsFound = true;
+                    Serial.println(F("    [+] CCS811 CO2/TVOC Sensor Online at 0x5A (Wire)"));
+                }
+            }
+        }
+        if (!lcdFound) {
+            byte foundLcd = 0;
+            Wire.beginTransmission(0x27);
+            if (Wire.endTransmission() == 0) foundLcd = 0x27;
+            else {
+                Wire.beginTransmission(0x3F);
+                if (Wire.endTransmission() == 0) foundLcd = 0x3F;
+            }
+            if (foundLcd != 0) {
+                lcdAddr = foundLcd;
+                pLcd = new LiquidCrystal_I2C(lcdAddr, 20, 4);
+                pLcd->init(); pLcd->backlight(); pLcd->clear();
+                lcdFound = true;
+                Serial.printf("    [+] 2004 LCD Initialized at 0x%02X (Wire)\n", lcdAddr);
+            }
+        }
+        return;
+    }
 
-    // Target devices we look for:
-    // LCD (0x27, 0x3F), BH1750 (0x23, 0x5C), CCS811 (0x5A, 0x5B)
+    // 2. Initial discovery: Scan candidate pairs with internal pull-ups enabled
+    Serial.println(F("  [>>] Scanning candidate pin pairs for I2C devices..."));
     const uint8_t TARGET_ADDRS[] = { 0x27, 0x3F, 0x23, 0x5C, 0x5A, 0x5B };
     const int NUM_TARGETS = sizeof(TARGET_ADDRS) / sizeof(TARGET_ADDRS[0]);
 
@@ -174,14 +219,16 @@ void scanAndInitI2C() {
         int sda = I2C_CANDIDATES[p].sda;
         int scl = I2C_CANDIDATES[p].scl;
 
+        pinMode(sda, INPUT_PULLUP);
+        pinMode(scl, INPUT_PULLUP);
         Wire.end();
-        Wire.begin(sda, scl, 100000);
-        Wire.setTimeOut(25); // Prevent hanging if bus is floating
+        Wire.begin(sda, scl, 50000); // 50kHz for rock-solid stability
+        Wire.setTimeOut(25);
         delay(20);
 
         int devicesOnThisPair = 0;
         bool hasLCD = false, hasBH = false, hasCCS = false;
-        uint8_t foundLcdAddr = 0;
+        uint8_t foundLcdAddr = 0, foundBhAddr = 0x23;
 
         for (int i = 0; i < NUM_TARGETS; i++) {
             uint8_t addr = TARGET_ADDRS[i];
@@ -193,6 +240,7 @@ void scanAndInitI2C() {
                     foundLcdAddr = addr;
                 } else if (addr == 0x23 || addr == 0x5C) {
                     hasBH = true;
+                    foundBhAddr = addr;
                 } else if (addr == 0x5A || addr == 0x5B) {
                     hasCCS = true;
                 }
@@ -223,9 +271,9 @@ void scanAndInitI2C() {
 
             // Initialize BH1750 if detected
             if (hasBH && !bh1750Found) {
-                if (lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, 0x23, &Wire)) {
+                if (lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, foundBhAddr, &Wire)) {
                     bh1750Found = true;
-                    Serial.println(F("        -> BH1750 Light Sensor Online at 0x23"));
+                    Serial.printf("        -> BH1750 Light Sensor Online at 0x%02X\n", foundBhAddr);
                 }
             }
 
