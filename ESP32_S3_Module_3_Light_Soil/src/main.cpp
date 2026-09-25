@@ -67,9 +67,6 @@ BH1750 lightMeter(0x23);
 bool bh1750_available = false;
 float currentLux = 0.0f;
 
-// Calibration factor: Master sensor = 202.5 lx / BH1750 raw = 277.1 lx
-const float LIGHT_CAL_FACTOR = 0.7308f;
-
 // =====================================================================
 //  3. Capacitive Soil Moisture Sensor Configuration (GPIO 1 - ADC1_CH0)
 // =====================================================================
@@ -457,15 +454,13 @@ void loop() {
     }
 
     // -------------------------------------------------------------
-    // 2. Read BH1750 Light Sensor (with Master Calibration)
+    // 2. Read BH1750 Light Sensor (Real Sensor Values)
     // -------------------------------------------------------------
-    float rawLux = 0.0f;
     float lux = 0.0f;
     if (bh1750_available) {
         float r = lightMeter.readLightLevel();
         if (r >= 0) {
-            rawLux = r;
-            lux = rawLux * LIGHT_CAL_FACTOR;
+            lux = r;
             currentLux = lux;
         }
     }
@@ -517,7 +512,6 @@ void loop() {
     printLine();
     if (bh1750_available) {
         Serial.printf("    Illuminance  :  %8.1f lx   [%s]\n", lux, lightStatus);
-        Serial.printf("    Raw Sensor   :  %8.1f lx   (Calibrated: x%.4f)\n", rawLux, LIGHT_CAL_FACTOR);
         int lightBars = min((int)(lux / 200.0f), 30);
         Serial.print(F("    Light Bar    :  ["));
         for (int i = 0; i < lightBars; i++) Serial.print('#');

@@ -46,6 +46,6 @@ Connect Relay Channel 1 screw terminals as an inline switch for the fan:
 
 ## ⚙️ Key Technical Features
 * **Active-LOW Optocoupler Isolation:** Prevents inductive EMF spikes from the fan motor from resetting the ESP32-S3.
-* **Master Light Calibration:** Calibrated with a $0.7308\times$ multiplier to match master reference instrument (200–205 lx range in office lighting).
+* **Direct Real Light Sensor Output (Raw Lux):** Native factory-calibrated illuminance values directly from the BH1750 sensor (no scaling factor).
 * **Capacitive Corrosion-Free Probe:** Insulated PCB electrodes that do not corrode in soil.
 * **ThingsBoard Cloud:** Pushes 12 telemetry keys every 3 seconds over HTTPS (including `fan_status` and `relay_fan`).
