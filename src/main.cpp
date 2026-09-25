@@ -90,6 +90,7 @@ float currentTempC = 0.0f;
 float currentTempF = 0.0f;
 float currentHum   = 0.0f;
 float currentHI    = 0.0f;
+int   dhtFailCount = 0;
 
 // Timing trackers
 unsigned long lastSensorRead = 0;
@@ -131,19 +132,28 @@ bool probeDHT11(int pin) {
     // Wait for DHT11 to pull line LOW
     unsigned long t0 = micros();
     while (digitalRead(pin) == HIGH) {
-        if (micros() - t0 > 120) return false;
+        if (micros() - t0 > 150) {
+            pinMode(pin, INPUT);
+            return false;
+        }
     }
 
     // Measure DHT11 LOW response pulse (~80us)
     t0 = micros();
     while (digitalRead(pin) == LOW) {
-        if (micros() - t0 > 120) return false;
+        if (micros() - t0 > 150) {
+            pinMode(pin, INPUT);
+            return false;
+        }
     }
 
     // Measure DHT11 HIGH response pulse (~80us)
     t0 = micros();
     while (digitalRead(pin) == HIGH) {
-        if (micros() - t0 > 120) return false;
+        if (micros() - t0 > 150) {
+            pinMode(pin, INPUT);
+            return false;
+        }
     }
 
     return true; // Valid DHT11 handshake confirmed!
@@ -252,6 +262,8 @@ void scanAndInitDHT() {
         if (probeDHT11(pin)) {
             dhtPin = pin;
             dhtFound = true;
+            dhtFailCount = 0;
+            if (pDht != nullptr) delete pDht;
             pDht = new DHT(dhtPin, DHT11);
             pDht->begin();
             Serial.printf("    [+] DHT11 DETECTED & INITIALIZED on GPIO %d!\n", dhtPin);
@@ -263,30 +275,20 @@ void scanAndInitDHT() {
 }
 
 // =====================================================================
-//  WiFi Connection
+//  WiFi Connection (Non-blocking retry)
 // =====================================================================
 void connectWiFi() {
     if (WiFi.status() == WL_CONNECTED) return;
-    WiFi.disconnect(true);
-    delay(100);
-    WiFi.mode(WIFI_STA);
-    WiFi.begin(WIFI_SSID, WIFI_PASS);
+    static unsigned long lastAttempt = 0;
+    if (millis() - lastAttempt < 15000 && lastAttempt != 0) return;
+    lastAttempt = millis();
 
     Serial.print(F("  [..] WiFi Connecting to "));
-    Serial.print(WIFI_SSID);
-
-    unsigned long t0 = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - t0 < 10000) {
-        delay(400);
-        Serial.print('.');
-    }
-
-    if (WiFi.status() == WL_CONNECTED) {
-        Serial.printf(" Connected! IP: %s (RSSI: %d dBm)\n",
-                      WiFi.localIP().toString().c_str(), WiFi.RSSI());
-    } else {
-        Serial.println(F(" Timed out (will retry)."));
-    }
+    Serial.println(WIFI_SSID);
+    WiFi.disconnect(true);
+    delay(50);
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(WIFI_SSID, WIFI_PASS);
 }
 
 // =====================================================================
@@ -478,6 +480,21 @@ void loop() {
                 currentTempC = t;
                 currentTempF = (t * 9.0f / 5.0f) + 32.0f;
                 currentHI    = pDht->computeHeatIndex(t, h, false);
+                dhtFailCount = 0;
+            } else {
+                dhtFailCount++;
+                if (dhtFailCount >= 2) {
+                    Serial.printf("  [!] DHT11 UNPLUGGED from GPIO %d! Re-enabling auto pin scan...\n", dhtPin);
+                    delete pDht;
+                    pDht = nullptr;
+                    dhtFound = false;
+                    dhtPin = -1;
+                    dhtFailCount = 0;
+                    currentHum = 0.0f;
+                    currentTempC = 0.0f;
+                    currentTempF = 0.0f;
+                    currentHI = 0.0f;
+                }
             }
         }
 
