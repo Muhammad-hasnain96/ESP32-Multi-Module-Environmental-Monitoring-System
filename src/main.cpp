@@ -329,24 +329,24 @@ bool probeSoilSensor(int pin, int& detectedADC) {
     if (wire1SDA != -1 && (pin == wire1SDA || pin == wire1SCL)) return false;
     if (dhtFound && pin == dhtPin) return false;
 
-    // Read 8 analog samples
+    // 1. Momentarily discharge floating static charge on the pin
+    pinMode(pin, INPUT_PULLDOWN);
+    delay(3);
+    pinMode(pin, INPUT);
+    delay(5);
+
+    // 2. Read 8 analog samples
     long sum = 0;
-    int minV = 4095;
-    int maxV = 0;
     for (int k = 0; k < 8; k++) {
-        int v = analogRead(pin);
-        sum += v;
-        if (v < minV) minV = v;
-        if (v > maxV) maxV = v;
-        delay(3);
+        sum += analogRead(pin);
+        delay(2);
     }
     int avg = sum / 8;
     detectedADC = avg;
 
-    // A valid powered capacitive sensor (air: ~2500-3900, water: ~1100-2200)
-    // has a steady DC voltage with low jitter (< 300 counts) and sits within 600 - 3980.
-    // Unconnected / floating pins drift widely or sit near 0 (< 300).
-    if (avg >= 600 && avg <= 3980 && (maxV - minV) < 300) {
+    // An empty floating pin drains to 0 (< 300).
+    // An active sensor (like Soil Moisture) actively drives voltage into the pin (>= 500).
+    if (avg >= 500) {
         return true;
     }
     return false;
@@ -659,7 +659,7 @@ void loop() {
                 bh1750FailCount = 0;
             } else {
                 bh1750FailCount++;
-                if (bh1750FailCount >= 2) {
+                if (bh1750FailCount >= 4) {
                     Serial.printf("  [!] BH1750 UNPLUGGED from Wire1 (SDA=%d, SCL=%d)! Re-enabling auto scan...\n", wire1SDA, wire1SCL);
                     bh1750Found = false;
                     currentLux = 0.0f;
