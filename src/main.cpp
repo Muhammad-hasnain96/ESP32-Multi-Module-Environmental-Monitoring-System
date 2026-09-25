@@ -329,24 +329,24 @@ bool probeSoilSensor(int pin, int& detectedADC) {
     if (wire1SDA != -1 && (pin == wire1SDA || pin == wire1SCL)) return false;
     if (dhtFound && pin == dhtPin) return false;
 
-    // 1. Momentarily discharge floating static charge on the pin
+    // Test with active internal pulldown:
+    // Floating open pins (like GPIO 4) drain to 0 (< 150).
+    // An active capacitive sensor on GPIO 6 actively pumps current into the pin,
+    // holding the voltage high (ADC >= 600).
     pinMode(pin, INPUT_PULLDOWN);
-    delay(3);
-    pinMode(pin, INPUT);
-    delay(5);
-
-    // 2. Read 8 analog samples
+    delay(8);
     long sum = 0;
-    for (int k = 0; k < 8; k++) {
+    for (int k = 0; k < 6; k++) {
         sum += analogRead(pin);
         delay(2);
     }
-    int avg = sum / 8;
-    detectedADC = avg;
+    int pdVal = sum / 6;
+    pinMode(pin, INPUT); // restore
 
-    // An empty floating pin drains to 0 (< 300).
-    // An active sensor (like Soil Moisture) actively drives voltage into the pin (>= 500).
-    if (avg >= 500) {
+    detectedADC = pdVal;
+
+    // Genuine active sensor maintains a steady DC level >= 600 under pulldown
+    if (pdVal >= 600 && pdVal <= 3900) {
         return true;
     }
     return false;
@@ -355,9 +355,9 @@ bool probeSoilSensor(int pin, int& detectedADC) {
 void scanAndInitSoil() {
     if (soilFound) return;
 
-    Serial.print(F("  [>>] Scanning Universal Pins for Soil Moisture: "));
-    int foundPin = -1;
-    int foundVal = 0;
+    Serial.print(F("  [>>] Scanning Universal Pins for Soil Moisture (with Pulldown Filter): "));
+    int bestPin = -1;
+    int bestVal = 0;
 
     for (int i = 0; i < NUM_UNIVERSAL_PINS; i++) {
         int pin = UNIVERSAL_PINS[i];
@@ -372,22 +372,22 @@ void scanAndInitSoil() {
 
         Serial.printf("GPIO%d=%d ", pin, adcVal);
 
-        if (isSoil && foundPin == -1) {
-            foundPin = pin;
-            foundVal = adcVal;
+        if (isSoil && adcVal > bestVal) {
+            bestPin = pin;
+            bestVal = adcVal;
         }
     }
     Serial.println();
 
-    if (foundPin != -1) {
-        soilPin = foundPin;
+    if (bestPin != -1) {
+        soilPin = bestPin;
         soilFound = true;
         soilFailCount = 0;
-        currentSoilRaw = foundVal;
-        currentSoilVolt = (foundVal / 4095.0f) * 3.3f;
-        float pct = ((float)(SOIL_AIR_VALUE - foundVal) / (float)(SOIL_AIR_VALUE - SOIL_WATER_VALUE)) * 100.0f;
+        currentSoilRaw = bestVal;
+        currentSoilVolt = (bestVal / 4095.0f) * 3.3f;
+        float pct = ((float)(SOIL_AIR_VALUE - bestVal) / (float)(SOIL_AIR_VALUE - SOIL_WATER_VALUE)) * 100.0f;
         currentSoilPct = constrain(pct, 0.0f, 100.0f);
-        Serial.printf("  [+] CAPACITIVE SOIL MOISTURE SENSOR DETECTED on GPIO %d (ADC: %d)!\n", soilPin, foundVal);
+        Serial.printf("  [+] CAPACITIVE SOIL MOISTURE SENSOR DETECTED on GPIO %d (ADC: %d)!\n", soilPin, bestVal);
     }
 }
 
@@ -631,7 +631,13 @@ void loop() {
             }
             int raw = sum / 10;
 
-            if (raw < 400 || raw > 4050) {
+            // Verify active driver under pulldown (unplugged floating wire drops to 0)
+            pinMode(soilPin, INPUT_PULLDOWN);
+            delay(5);
+            int pdCheck = analogRead(soilPin);
+            pinMode(soilPin, INPUT);
+
+            if (pdCheck < 400) {
                 soilFailCount++;
                 if (soilFailCount >= 3) {
                     Serial.printf("  [!] Soil Moisture Sensor UNPLUGGED from GPIO %d! Re-enabling auto scan...\n", soilPin);
