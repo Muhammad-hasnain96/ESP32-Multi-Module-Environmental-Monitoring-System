@@ -32,7 +32,7 @@
 //      - IN4   -> GPIO 8   (Active-LOW: LOW=ON, HIGH=OFF)
 //      - VCC   -> 5V (VIN)
 //      - GND   -> GND
-//      - All 4 Channels Turn ON at >=30°C, OFF at <27°C
+//      - All 4 Channels Turn ON at >=30°C, OFF at <28°C
 //
 //   [COMMENTED / OPTIONAL] 6. HX711 5kg Load Cell:
 //      - DT    -> GPIO 14
@@ -102,7 +102,7 @@ bool lcd_available = false;
 
 // Temperature Hysteresis Thresholds
 const float TEMP_FAN_ON_THRESH  = 30.0f; // Turn ON when >= 30.0 °C
-const float TEMP_FAN_OFF_THRESH = 27.0f; // Turn OFF when < 27.0 °C
+const float TEMP_FAN_OFF_THRESH = 28.0f; // Turn OFF when < 28.0 °C
 bool fanState = false;                  // Current relay / fan operational state
 
 void setAllRelays(bool state) {
@@ -309,7 +309,7 @@ void setup() {
     Serial.println(F("  ESP32-S3 — MODULE 3: COMPLETE LIGHT, SOIL & ENVIRONMENT"));
     printLine('=');
     Serial.println(F("  Sensors : DHT11 (GPIO 4) | BH1750 (Wire1: SDA=15, SCL=16) | Soil (GPIO 1)"));
-    Serial.println(F("  Actuator: 4-Ch Relays (IN1:7, IN2:6, IN3:5, IN4:8, ON>=30.0C, OFF<27.0C)"));
+    Serial.println(F("  Actuator: 4-Ch Relays (IN1:7, IN2:6, IN3:5, IN4:8, ON>=30.0C, OFF<28.0C)"));
     Serial.println(F("  Display : 2004 I2C LCD (Wire: SDA=17, SCL=18)"));
     Serial.println(F("  Cloud   : ThingsBoard"));
     printLine('=');
@@ -444,7 +444,7 @@ void loop() {
     float hi = dht.computeHeatIndex(tC, hum, false);
 
     // -------------------------------------------------------------
-    // Cooling Fan & 4-Channel Relay Control Logic (Hysteresis: ON >= 30.0C, OFF < 27.0C)
+    // Cooling Fan & 4-Channel Relay Control Logic (Hysteresis: ON >= 30.0C, OFF < 28.0C)
     // -------------------------------------------------------------
     if (dhtOK) {
         if (!fanState && tC >= TEMP_FAN_ON_THRESH) {
@@ -452,7 +452,7 @@ void loop() {
             Serial.println(F("  [!] TEMP >= 30.0C -> ALL 4 RELAYS (IN1..IN4) TURNED [ON]"));
         } else if (fanState && tC < TEMP_FAN_OFF_THRESH) {
             setAllRelays(false);
-            Serial.println(F("  [!] TEMP < 27.0C -> ALL 4 RELAYS (IN1..IN4) TURNED [OFF]"));
+            Serial.println(F("  [!] TEMP < 28.0C -> ALL 4 RELAYS (IN1..IN4) TURNED [OFF]"));
         }
     }
 

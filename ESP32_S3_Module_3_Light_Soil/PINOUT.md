@@ -39,8 +39,8 @@ Connect Relay Channel 1 screw terminals as an inline switch for the fan:
 ```
 
 * **When Temp $\ge 30^\circ\text{C}$:** ESP32 pulls GPIO 7 `LOW` $\rightarrow$ Relay clicks and connects `COM` to `NO` $\rightarrow$ **Fan turns ON**.
-* **When Temp $< 27^\circ\text{C}$:** ESP32 pulls GPIO 7 `HIGH` $\rightarrow$ Relay opens $\rightarrow$ **Fan turns OFF**.
-* **Hysteresis Band (27°C – 30°C):** Prevents rapid on/off cycling around the threshold.
+* **When Temp $< 28^\circ\text{C}$:** ESP32 pulls GPIO 7 `HIGH` $\rightarrow$ Relay opens $\rightarrow$ **Fan turns OFF**.
+* **Hysteresis Band (28°C – 30°C):** Prevents rapid on/off cycling around the threshold.
 
 ---
 
