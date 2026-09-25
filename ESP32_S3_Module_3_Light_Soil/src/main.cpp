@@ -25,7 +25,13 @@
 //      - VCC   -> 5V (VIN)
 //      - GND   -> GND
 //
-//   [COMMENTED / OPTIONAL] 5. HX711 5kg Load Cell:
+//   5. 4-Channel 5V Relay Module (Fan Control):
+//      - IN1   -> GPIO 7   (Active-LOW: LOW=ON, HIGH=OFF)
+//      - VCC   -> 5V (VIN)
+//      - GND   -> GND
+//      - COM / NO -> Fan Power Circuit (Turns ON at >=30°C, OFF at <27°C)
+//
+//   [COMMENTED / OPTIONAL] 6. HX711 5kg Load Cell:
 //      - DT    -> GPIO 14
 //      - SCK   -> GPIO 12
 //      - VCC   -> 5V (VIN)
@@ -79,6 +85,18 @@ const int WATER_VALUE = 1350; // Pure water (100% moisture)
 #define LCD_SCL_PIN      18
 LiquidCrystal_I2C lcd(0x27, 20, 4);
 bool lcd_available = false;
+
+// =====================================================================
+//  5. Cooling Fan Relay Configuration (GPIO 7 - Active LOW)
+// =====================================================================
+#define RELAY_FAN_PIN         7
+#define RELAY_ON              LOW   // Optocoupler relay turns ON on LOW
+#define RELAY_OFF             HIGH  // Optocoupler relay turns OFF on HIGH
+
+// Temperature Hysteresis Thresholds
+const float TEMP_FAN_ON_THRESH  = 30.0f; // Turn ON when >= 30.0 °C
+const float TEMP_FAN_OFF_THRESH = 27.0f; // Turn OFF when < 27.0 °C
+bool fanState = false;                  // Current fan operational state
 
 // =====================================================================
 //  [COMMENTED] HX711 Load Cell Configuration
@@ -210,11 +228,12 @@ void connectWiFi() {
 }
 
 // =====================================================================
-//  ThingsBoard Telemetry Dispatch (Module 3: 10 Keys)
+//  ThingsBoard Telemetry Dispatch (Module 3: 12 Keys)
 // =====================================================================
 void sendTelemetry(float tC, float tF, float hum, float hi,
                    float lux, const char* lightLv,
-                   float soilPct, float soilV, int soilADC, const char* soilLv) {
+                   float soilPct, float soilV, int soilADC, const char* soilLv,
+                   bool fanOn) {
     if (WiFi.status() != WL_CONNECTED) {
         Serial.println(F(" Skipped (WiFi offline)"));
         return;
@@ -245,6 +264,9 @@ void sendTelemetry(float tC, float tF, float hum, float hi,
     p += ",\"soilVoltage\":"   + String(soilV, 3);
     p += ",\"soilRawADC\":"    + String(soilADC);
     p += ",\"soilStatus\":\""   + String(soilLv) + "\"";
+    // Cooling Fan Relay
+    p += ",\"fan_status\":\""   + String(fanOn ? "ON" : "OFF") + "\"";
+    p += ",\"relay_fan\":"      + String(fanOn ? "true" : "false");
     p += "}";
 
     int code = https.POST(p);
@@ -266,9 +288,10 @@ void setup() {
     printLine('=');
     Serial.println(F("  ESP32-S3 — MODULE 3: COMPLETE LIGHT, SOIL & ENVIRONMENT"));
     printLine('=');
-    Serial.println(F("  Sensors: DHT11 (GPIO 4) | BH1750 (Wire1: SDA=15, SCL=16) | Soil (GPIO 1)"));
-    Serial.println(F("  Display: 2004 I2C LCD (Wire: SDA=17, SCL=18)"));
-    Serial.println(F("  Cloud  : ThingsBoard"));
+    Serial.println(F("  Sensors : DHT11 (GPIO 4) | BH1750 (Wire1: SDA=15, SCL=16) | Soil (GPIO 1)"));
+    Serial.println(F("  Actuator: Cooling Fan Relay (GPIO 7, ON>=30.0C, OFF<27.0C)"));
+    Serial.println(F("  Display : 2004 I2C LCD (Wire: SDA=17, SCL=18)"));
+    Serial.println(F("  Cloud   : ThingsBoard"));
     printLine('=');
 
     // 1. Initialize DHT11
@@ -280,6 +303,12 @@ void setup() {
     analogSetAttenuation(ADC_11db); // 0 - 3.3V
     pinMode(SOIL_PIN, INPUT);
     Serial.println(F("  [OK] Soil Moisture Sensor on GPIO 1 (ADC1_CH0)"));
+
+    // 3. Initialize Cooling Fan Relay (GPIO 7 - Active LOW, default OFF)
+    pinMode(RELAY_FAN_PIN, OUTPUT);
+    digitalWrite(RELAY_FAN_PIN, RELAY_OFF);
+    fanState = false;
+    Serial.println(F("  [OK] Cooling Fan Relay on GPIO 7 (Default OFF)"));
 
     // 3. Initialize 2004 I2C LCD on Dedicated Wire (SDA=17, SCL=18)
     delay(100); // Allow LCD power to stabilize
@@ -393,6 +422,21 @@ void loop() {
     float hi = dht.computeHeatIndex(tC, hum, false);
 
     // -------------------------------------------------------------
+    // Cooling Fan Control Logic (Hysteresis: ON >= 30.0C, OFF < 27.0C)
+    // -------------------------------------------------------------
+    if (dhtOK) {
+        if (!fanState && tC >= TEMP_FAN_ON_THRESH) {
+            fanState = true;
+            digitalWrite(RELAY_FAN_PIN, RELAY_ON);
+            Serial.println(F("  [!] TEMP >= 30.0C -> FAN RELAY [ON]"));
+        } else if (fanState && tC < TEMP_FAN_OFF_THRESH) {
+            fanState = false;
+            digitalWrite(RELAY_FAN_PIN, RELAY_OFF);
+            Serial.println(F("  [!] TEMP < 27.0C -> FAN RELAY [OFF]"));
+        }
+    }
+
+    // -------------------------------------------------------------
     // 2. Read BH1750 Light Sensor (with Master Calibration)
     // -------------------------------------------------------------
     float rawLux = 0.0f;
@@ -437,7 +481,17 @@ void loop() {
     }
     printLine();
 
-    // Section 2: Light Sensor
+    // Section 2: Cooling Fan Relay
+    Serial.printf("  COOLING FAN RELAY  [IN1 -> GPIO 7]  [%s]\n", fanState ? "FAN ON" : "FAN OFF");
+    printLine();
+    Serial.printf("    Fan Status   :  %s  (Pin Level: %s)\n",
+                  fanState ? "ACTIVE (Fan Running)" : "STANDBY (Fan Stopped)",
+                  fanState ? "LOW (Active)" : "HIGH (Inactive)");
+    Serial.printf("    Control Rule :  Turn ON >= %.1f C  |  Turn OFF < %.1f C\n",
+                  TEMP_FAN_ON_THRESH, TEMP_FAN_OFF_THRESH);
+    printLine();
+
+    // Section 3: Light Sensor
     Serial.printf("  LIGHT INTENSITY  [BH1750 - Wire1 SDA=15 SCL=16]  %s\n",
                   bh1750_available ? "[ONLINE]" : "[OFFLINE]");
     printLine();
@@ -454,7 +508,7 @@ void loop() {
     }
     printLine();
 
-    // Section 3: Soil Moisture Sensor
+    // Section 4: Soil Moisture Sensor
     Serial.println(F("  SOIL MOISTURE  [Capacitive v2.0 - GPIO 1]"));
     printLine();
     Serial.printf("    Moisture     :  %5.1f %%      [%s]\n", soilMoisturePct, soilStatus);
@@ -468,9 +522,9 @@ void loop() {
     Serial.printf("] %.1f %%\n", soilMoisturePct);
     printLine();
 
-    // Section 4: Cloud Telemetry
-    Serial.print(F("  CLOUD -> ThingsBoard Telemetry (10 keys) ..."));
-    sendTelemetry(tC, tF, hum, hi, lux, lightStatus, soilMoisturePct, soilVoltage, soilADC, soilStatus);
+    // Section 5: Cloud Telemetry
+    Serial.print(F("  CLOUD -> ThingsBoard Telemetry (12 keys) ..."));
+    sendTelemetry(tC, tF, hum, hi, lux, lightStatus, soilMoisturePct, soilVoltage, soilADC, soilStatus, fanState);
 
     printLine('=');
 
@@ -480,8 +534,8 @@ void loop() {
     if (lcd_available) {
         char buf[21];
 
-        // Row 0: Temperature & Humidity
-        snprintf(buf, sizeof(buf), "T:%4.1fC   H:%4.1f%%   ", tC, hum);
+        // Row 0: Temperature, Humidity & Fan Status
+        snprintf(buf, sizeof(buf), "T:%4.1fC H:%2.0f%% F:%-3s ", tC, hum, fanState ? "ON" : "OFF");
         lcd.setCursor(0, 0);
         lcd.print(buf);
 

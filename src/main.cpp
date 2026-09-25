@@ -1,613 +1,398 @@
 // =====================================================================
-// ESP32-S3 — GENERIC SMART SENSOR HUB (Universal Plug-and-Play)
+// ESP32-S3 — MODULE 3: Light, Soil & Environmental System
 // =====================================================================
-// Plug-and-Play Dynamic Features:
-//   - Dedicated LCD 2004 on Wire: GPIO 17 (SDA) & GPIO 18 (SCL)
-//   - I2C Sensors (BH1750, CCS811) on Wire1: GPIO 15 & 16 (or candidate pairs)
-//   - Universal Analog / Digital Auto-Sensing Pins:
-//     Candidate GPIOs: 4, 5, 6, 7, 1, 2, 8, 9, 10
-//     * If DHT11 is plugged -> Auto-detects as DHT11 (Digital handshake)
-//     * If Soil Sensor is plugged -> Auto-detects as Soil Moisture (Analog ADC)
-//     * Unplug either -> Automatic hot-unplug detection & re-scan!
-//     * Swap pins anytime -> Auto-reconfigures instantly!
-//   - Dynamic 2004 LCD: Rotating multi-page dashboard.
-//   - ThingsBoard Cloud: Real-time telemetry streaming.
+// SENSOR WIRING FOR ESP32-S3:
+//   1. DHT11 Sensor:
+//      - DATA  -> GPIO 4
+//      - VCC   -> 3.3V / 5V
+//      - GND   -> GND
 //
-// Access Token: 2HGvWTV145aFOdJbjAwQ
-// Server: thingsboard.cloud
+//   2. BH1750 Digital Light Sensor:
+//      - SDA   -> GPIO 15  (Wire1)
+//      - SCL   -> GPIO 16  (Wire1)
+//      - ADDR  -> GND (Address: 0x23)
+//      - VCC   -> 3.3V
+//      - GND   -> GND
+//
+//   3. Capacitive Soil Moisture Sensor v2.0:
+//      - AOUT  -> GPIO 1   (ADC1_CH0 - 12-bit Analog Input)
+//      - VCC   -> 3.3V
+//      - GND   -> GND
+//
+//   4. 2004 Character LCD (I2C Backpack):
+//      - SDA   -> GPIO 17  (Wire: Address 0x27 / 0x3F)
+//      - SCL   -> GPIO 18  (Wire)
+//      - VCC   -> 5V (VIN)
+//      - GND   -> GND
+//
+//   5. 4-Channel 5V Relay Module (Fan Control):
+//      - IN1   -> GPIO 7   (Active-LOW: LOW=ON, HIGH=OFF)
+//      - VCC   -> 5V (VIN)
+//      - GND   -> GND
+//      - COM / NO -> Fan Power Circuit (Turns ON at >=30°C, OFF at <27°C)
+//
+//   [COMMENTED / OPTIONAL] 6. HX711 5kg Load Cell:
+//      - DT    -> GPIO 14
+//      - SCK   -> GPIO 12
+//      - VCC   -> 5V (VIN)
+//      - GND   -> GND
 // =====================================================================
 
 #include <Arduino.h>
 #include <Wire.h>
 #include <DHT.h>
 #include <BH1750.h>
-#include <Adafruit_CCS811.h>
 #include <LiquidCrystal_I2C.h>
+// #include "HX711.h"
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
 
 // =====================================================================
+//  1. DHT11 Configuration (GPIO 4)
+// =====================================================================
+#define DHTPIN   4
+#define DHTTYPE  DHT11
+DHT dht(DHTPIN, DHTTYPE);
+
+// =====================================================================
+//  2. BH1750 Configuration (Wire1: SDA=15, SCL=16)
+// =====================================================================
+#define BH1750_SDA_PIN  15
+#define BH1750_SCL_PIN  16
+BH1750 lightMeter(0x23);
+bool bh1750_available = false;
+float currentLux = 0.0f;
+
+// Calibration factor: Master sensor = 202.5 lx / BH1750 raw = 277.1 lx
+const float LIGHT_CAL_FACTOR = 0.7308f;
+
+// =====================================================================
+//  3. Capacitive Soil Moisture Sensor Configuration (GPIO 1 - ADC1_CH0)
+// =====================================================================
+#define SOIL_PIN         1
+#define VREF             3.3f
+#define ADC_RESOLUTION   4095.0f
+
+// Calibration reference values (ADC 0-4095)
+const int AIR_VALUE   = 3000; // Dry air (0% moisture)
+const int WATER_VALUE = 1350; // Pure water (100% moisture)
+
+// =====================================================================
+//  4. 2004 Character LCD (Dedicated Wire: SDA=17, SCL=18)
+// =====================================================================
+#define LCD_SDA_PIN      17
+#define LCD_SCL_PIN      18
+LiquidCrystal_I2C lcd(0x27, 20, 4);
+bool lcd_available = false;
+
+// =====================================================================
+//  5. Cooling Fan Relay Configuration (GPIO 7 - Active LOW)
+// =====================================================================
+#define RELAY_FAN_PIN         7
+#define RELAY_ON              LOW   // Optocoupler relay turns ON on LOW
+#define RELAY_OFF             HIGH  // Optocoupler relay turns OFF on HIGH
+
+// Temperature Hysteresis Thresholds
+const float TEMP_FAN_ON_THRESH  = 30.0f; // Turn ON when >= 30.0 °C
+const float TEMP_FAN_OFF_THRESH = 27.0f; // Turn OFF when < 27.0 °C
+bool fanState = false;                  // Current fan operational state
+
+// =====================================================================
+//  [COMMENTED] HX711 Load Cell Configuration
+// =====================================================================
+// #define HX711_DOUT_PIN  14
+// #define HX711_SCK_PIN   12
+// HX711 scale;
+// bool scale_available = false;
+// float scale_calibration_factor = 420.0f;
+
+// =====================================================================
 //  WiFi & ThingsBoard Configuration
 // =====================================================================
-const char* WIFI_SSID = "FAST-1144";
-const char* WIFI_PASS = "12345678";
-const char* TB_HOST   = "thingsboard.cloud";
-const char* TB_TOKEN  = "2HGvWTV145aFOdJbjAwQ";
-const int   TB_PORT   = 80;
-
-// Update intervals
-const unsigned long SENSOR_INTERVAL = 3000;   // Sensor read & telemetry every 3s
-const unsigned long LCD_PAGE_TIME   = 3500;   // Rotate LCD screen every 3.5s
+const char* WIFI_SSID = "Meeting Room";
+const char* WIFI_PASS = "Shahid786$$";
+const char* TB_HOST   = "https://things.digitalm.cloud";
+const char* TB_TOKEN  = "52kqr3ax2flcp0gdy56s";
 
 // =====================================================================
-//  Hardware Pin Assignments
+//  Timing & State Variables
 // =====================================================================
-// 1. LCD 2004 on Dedicated Primary I2C (Wire)
-#define LCD_SDA_PIN   17
-#define LCD_SCL_PIN   18
-
-// 2. Candidate pairs for Secondary I2C (Wire1 - Sensors: BH1750 / CCS811)
-struct I2CPair {
-    int sda;
-    int scl;
-    const char* label;
-};
-
-const I2CPair WIRE1_CANDIDATES[] = {
-    { 15, 16, "SDA=15, SCL=16" },
-    { 16, 15, "SDA=16, SCL=15" }
-};
-const int NUM_WIRE1_CANDIDATES = sizeof(WIRE1_CANDIDATES) / sizeof(WIRE1_CANDIDATES[0]);
-
-// 3. Universal Candidate GPIOs (All are digital I/O AND ADC1 channels on ESP32-S3)
-// Prioritize GPIO 6 and analog channels, placing 4 last to avoid floating pullup locks
-const int UNIVERSAL_PINS[] = { 6, 5, 1, 2, 7, 8, 9, 10, 4 };
-const int NUM_UNIVERSAL_PINS = sizeof(UNIVERSAL_PINS) / sizeof(UNIVERSAL_PINS[0]);
-
-// Soil Moisture Calibration Constants (Verified live: 2800 in air)
-const int SOIL_AIR_VALUE   = 2800; // Dry air (0% moisture)
-const int SOIL_WATER_VALUE = 1350; // In water / fully saturated (100% moisture)
-
-// =====================================================================
-//  Global Sensor State & Pointers
-// =====================================================================
-// LCD State (Wire)
-LiquidCrystal_I2C* pLcd = nullptr;
-bool lcdFound = false;
-uint8_t lcdAddr = 0x27;
-
-// BH1750 State (Wire1)
-BH1750 lightMeter;
-bool bh1750Found = false;
-float currentLux = 0.0f;
-int wire1SDA = -1;
-int wire1SCL = -1;
-int bh1750FailCount = 0;
-
-// CCS811 State (Wire1)
-Adafruit_CCS811 ccs;
-bool ccsFound = false;
-uint16_t currentCO2  = 400;
-uint16_t currentTVOC = 0;
-
-// DHT11 State (Single-Wire Digital)
-DHT* pDht = nullptr;
-int  dhtPin = -1;
-bool dhtFound = false;
-int  dhtFailCount = 0;
-float currentTempC = 0.0f;
-float currentTempF = 0.0f;
-float currentHum   = 0.0f;
-float currentHI    = 0.0f;
-
-// Soil Moisture State (Single-Wire Analog ADC1)
-int   soilPin = -1;
-bool  soilFound = false;
-int   soilFailCount = 0;
-int   currentSoilRaw = 0;
-float currentSoilPct = 0.0f;
-float currentSoilVolt = 0.0f;
-
-// Timing trackers
-unsigned long lastSensorRead = 0;
-unsigned long lastLcdSwitch  = 0;
-int lcdPage = 0;
+const unsigned long INTERVAL = 3000UL; // Read and send every 3 seconds
+unsigned long lastLog = 0;
 unsigned long loopCount = 0;
 
 // =====================================================================
-//  Utility: Uptime String & Banner Separators
+//  Helpers
 // =====================================================================
-String getUptime() {
-    unsigned long sec = millis() / 1000;
-    unsigned long m = (sec / 60) % 60;
-    unsigned long h = (sec / 3600);
-    unsigned long s = sec % 60;
-    char buf[16];
-    snprintf(buf, sizeof(buf), "%02lu:%02lu:%02lu", h, m, s);
-    return String(buf);
+String uptime() {
+    unsigned long s = millis() / 1000;
+    unsigned long h = s / 3600; s %= 3600;
+    unsigned long m = s / 60;   s %= 60;
+    char b[12]; snprintf(b, sizeof(b), "%02lu:%02lu:%02lu", h, m, s);
+    return String(b);
 }
 
-void printLine(char c = '=') {
+void printLine(char c = '-') {
     for (int i = 0; i < 62; i++) Serial.print(c);
     Serial.println();
 }
 
-// =====================================================================
-//  LCD Initialization (Dedicated on Wire: SDA=17, SCL=18)
-// =====================================================================
-void initLCD() {
-    if (lcdFound) return;
+// Light Status Classification (Concise)
+const char* getLightStatus(float lux) {
+    if (lux < 1.0f)     return "DARK";
+    if (lux < 50.0f)    return "DIM";
+    if (lux < 200.0f)   return "MODERATE";
+    if (lux < 500.0f)   return "BRIGHT";
+    if (lux < 1000.0f)  return "VERY BRIGHT";
+    if (lux < 10000.0f) return "OUTDOOR SHADE";
+    if (lux < 30000.0f) return "CLOUDY OUTDOOR";
+    return                     "DIRECT SUNLIGHT";
+}
 
-    const int LCD_PAIRS[][2] = {
-        {17, 18}, {18, 17}
-    };
-    const int NUM_LCD_PAIRS = sizeof(LCD_PAIRS) / sizeof(LCD_PAIRS[0]);
+// Soil Moisture Status Classification
+const char* getSoilStatus(float pct) {
+    if (pct < 15.0f)  return "VERY DRY";
+    if (pct < 35.0f)  return "DRY";
+    if (pct < 65.0f)  return "OPTIMAL";
+    if (pct < 85.0f)  return "WET";
+    return                   "WATERLOGGED";
+}
 
-    for (int i = 0; i < NUM_LCD_PAIRS; i++) {
-        int sda = LCD_PAIRS[i][0];
-        int scl = LCD_PAIRS[i][1];
-        if (dhtPin != -1 && (sda == dhtPin || scl == dhtPin)) continue;
-        if (soilPin != -1 && (sda == soilPin || scl == soilPin)) continue;
-        if (wire1SDA != -1 && (sda == wire1SDA || scl == wire1SCL)) continue;
+// Concise labels for 2004 Character LCD (20-column fit)
+const char* shortLightStatus(float lux) {
+    if (lux < 1.0f)     return "DARK";
+    if (lux < 50.0f)    return "DIM";
+    if (lux < 200.0f)   return "MODER";
+    if (lux < 500.0f)   return "BRIGHT";
+    if (lux < 1000.0f)  return "V-BRT";
+    if (lux < 10000.0f) return "SHADE";
+    if (lux < 30000.0f) return "CLOUDY";
+    return                     "SUNNY";
+}
 
-        pinMode(sda, INPUT_PULLUP);
-        pinMode(scl, INPUT_PULLUP);
-        Wire.end();
-        Wire.begin(sda, scl, 50000);
-        Wire.setTimeOut(25);
-        delay(20);
-
-        byte foundAddr = 0;
-        Wire.beginTransmission(0x27);
-        if (Wire.endTransmission() == 0) foundAddr = 0x27;
-        else {
-            Wire.beginTransmission(0x3F);
-            if (Wire.endTransmission() == 0) foundAddr = 0x3F;
-        }
-
-        if (foundAddr != 0) {
-            lcdAddr = foundAddr;
-            if (pLcd != nullptr) delete pLcd;
-            pLcd = new LiquidCrystal_I2C(lcdAddr, 20, 4);
-            pLcd->init();
-            Wire.begin(sda, scl, 50000);
-            pLcd->backlight();
-            pLcd->clear();
-            pLcd->setCursor(0, 0);
-            pLcd->print(F("===================="));
-            pLcd->setCursor(0, 1);
-            pLcd->print(F(" ESP32-S3 GENERIC   "));
-            pLcd->setCursor(0, 2);
-            pLcd->print(F(" SMART SENSOR HUB   "));
-            pLcd->setCursor(0, 3);
-            pLcd->print(F("===================="));
-            lcdFound = true;
-            Serial.printf("  [+] 2004 LCD Initialized on Wire (SDA=%d, SCL=%d) at 0x%02X\n",
-                          sda, scl, lcdAddr);
-            return;
-        }
-    }
+const char* shortSoilStatus(float pct) {
+    if (pct < 15.0f)  return "V-DRY";
+    if (pct < 35.0f)  return "DRY";
+    if (pct < 65.0f)  return "OPTIM";
+    if (pct < 85.0f)  return "WET";
+    return                   "FLOOD";
 }
 
 // =====================================================================
-//  I2C Sensors Initialization (Wire1: BH1750 & CCS811)
+//  Capacitive Soil Sensor Reading with Multi-Sample Filter
 // =====================================================================
-void initI2CSensors() {
-    if (bh1750Found && ccsFound) return;
+float readSoilMoisture(int &outRawADC, float &outVoltage) {
+    const int SAMPLES = 30;
+    int buffer[SAMPLES];
 
-    // If Wire1 is already active on a pin pair, stay on that pair and only check missing sensors
-    if (wire1SDA != -1 && wire1SCL != -1) {
-        if (!bh1750Found) {
-            byte bhAddr = 0;
-            Wire1.beginTransmission(0x23);
-            if (Wire1.endTransmission() == 0) bhAddr = 0x23;
-            else {
-                Wire1.beginTransmission(0x5C);
-                if (Wire1.endTransmission() == 0) bhAddr = 0x5C;
-            }
-            if (bhAddr != 0) {
-                if (lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, bhAddr, &Wire1)) {
-                    bh1750Found = true;
-                    bh1750FailCount = 0;
-                }
-            }
-        }
-        if (!ccsFound) {
-            Wire1.beginTransmission(0x5A);
-            if (Wire1.endTransmission() == 0) {
-                if (ccs.begin(0x5A, &Wire1)) {
-                    ccsFound = true;
-                }
-            }
-        }
-        return;
-    }
-
-    for (int p = 0; p < NUM_WIRE1_CANDIDATES; p++) {
-        int sda = WIRE1_CANDIDATES[p].sda;
-        int scl = WIRE1_CANDIDATES[p].scl;
-
-        // Skip pins if currently used
-        if (dhtPin != -1 && (sda == dhtPin || scl == dhtPin)) continue;
-        if (soilPin != -1 && (sda == soilPin || scl == soilPin)) continue;
-        if (sda == LCD_SDA_PIN || scl == LCD_SCL_PIN) continue;
-
-        pinMode(sda, INPUT_PULLUP);
-        pinMode(scl, INPUT_PULLUP);
-        Wire1.end();
-        Wire1.begin(sda, scl, 50000);
-        Wire1.setTimeOut(25);
-        delay(20);
-
-        bool foundAny = false;
-
-        // Check BH1750 (0x23, 0x5C)
-        if (!bh1750Found) {
-            byte bhAddr = 0;
-            Wire1.beginTransmission(0x23);
-            if (Wire1.endTransmission() == 0) bhAddr = 0x23;
-            else {
-                Wire1.beginTransmission(0x5C);
-                if (Wire1.endTransmission() == 0) bhAddr = 0x5C;
-            }
-            if (bhAddr != 0) {
-                if (lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, bhAddr, &Wire1)) {
-                    bh1750Found = true;
-                    wire1SDA = sda;
-                    wire1SCL = scl;
-                    foundAny = true;
-                    Serial.printf("  [+] BH1750 Light Sensor Online on Wire1 (%s) at 0x%02X\n",
-                                  WIRE1_CANDIDATES[p].label, bhAddr);
-                }
-            }
-        }
-
-        // Check CCS811 (0x5A)
-        if (!ccsFound) {
-            Wire1.beginTransmission(0x5A);
-            if (Wire1.endTransmission() == 0) {
-                if (ccs.begin(0x5A, &Wire1)) {
-                    ccsFound = true;
-                    wire1SDA = sda;
-                    wire1SCL = scl;
-                    foundAny = true;
-                    Serial.printf("  [+] CCS811 CO2 Sensor Online on Wire1 (%s) at 0x5A\n",
-                                  WIRE1_CANDIDATES[p].label);
-                }
-            }
-        }
-
-        if (foundAny) break;
-    }
-}
-
-// =====================================================================
-//  DHT11 Handshake Probe & Scanner
-// =====================================================================
-bool probeDHT11(int pin) {
-    pinMode(pin, OUTPUT);
-    digitalWrite(pin, LOW);
-    delay(20);                     // Start pulse (min 18ms)
-    digitalWrite(pin, HIGH);
-    delayMicroseconds(30);
-    pinMode(pin, INPUT_PULLUP);
-
-    // Wait for DHT11 to pull line LOW
-    unsigned long t0 = micros();
-    while (digitalRead(pin) == HIGH) {
-        if (micros() - t0 > 150) {
-            pinMode(pin, INPUT);
-            return false;
-        }
-    }
-
-    // Measure DHT11 LOW response pulse (~80us)
-    t0 = micros();
-    while (digitalRead(pin) == LOW) {
-        if (micros() - t0 > 150) {
-            pinMode(pin, INPUT);
-            return false;
-        }
-    }
-
-    // Measure DHT11 HIGH response pulse (~80us)
-    t0 = micros();
-    while (digitalRead(pin) == HIGH) {
-        if (micros() - t0 > 150) {
-            pinMode(pin, INPUT);
-            return false;
-        }
-    }
-
-    return true; // Valid DHT11 handshake confirmed!
-}
-
-void scanAndInitDHT() {
-    if (dhtFound) return;
-
-    for (int i = 0; i < NUM_UNIVERSAL_PINS; i++) {
-        int pin = UNIVERSAL_PINS[i];
-
-        // Skip pins used by LCD, Wire1, or active Soil sensor
-        if (pin == LCD_SDA_PIN || pin == LCD_SCL_PIN) continue;
-        if (wire1SDA != -1 && (pin == wire1SDA || pin == wire1SCL)) continue;
-        if (soilFound && pin == soilPin) continue;
-
-        if (probeDHT11(pin)) {
-            dhtPin = pin;
-            dhtFound = true;
-            dhtFailCount = 0;
-            if (pDht != nullptr) delete pDht;
-            pDht = new DHT(dhtPin, DHT11);
-            pDht->begin();
-            Serial.printf("  [+] DHT11 DETECTED & INITIALIZED on GPIO %d!\n", dhtPin);
-            return;
-        }
-    }
-}
-
-// =====================================================================
-//  Capacitive Soil Moisture Probe & Scanner (Analog ADC1)
-// =====================================================================
-bool probeSoilSensor(int pin, int& detectedADC) {
-    // If pin is used by LCD, Wire1, or active DHT, skip
-    if (pin == LCD_SDA_PIN || pin == LCD_SCL_PIN) return false;
-    if (wire1SDA != -1 && (pin == wire1SDA || pin == wire1SCL)) return false;
-    if (dhtFound && pin == dhtPin) return false;
-
-    // Test with active internal pulldown:
-    // Floating open pins (like GPIO 4) drain to 0 (< 150).
-    // An active capacitive sensor on GPIO 6 actively pumps current into the pin,
-    // holding the voltage high (ADC >= 600).
-    pinMode(pin, INPUT_PULLDOWN);
-    delay(8);
-    long sum = 0;
-    for (int k = 0; k < 6; k++) {
-        sum += analogRead(pin);
+    for (int i = 0; i < SAMPLES; i++) {
+        buffer[i] = analogRead(SOIL_PIN);
         delay(2);
     }
-    int pdVal = sum / 6;
-    pinMode(pin, INPUT); // restore
 
-    detectedADC = pdVal;
-
-    // Genuine active capacitive soil sensor outputs between 900 (water) and 3500 (dry air).
-    // Saturated 4095/3800+ pins (like floating GPIO 4) are strictly rejected!
-    if (pdVal >= 900 && pdVal <= 3500) {
-        return true;
-    }
-    return false;
-}
-
-void scanAndInitSoil() {
-    if (soilFound) return;
-
-    Serial.print(F("  [>>] Scanning Universal Pins for Soil Moisture (with Pulldown Filter): "));
-    int bestPin = -1;
-    int bestVal = 0;
-
-    for (int i = 0; i < NUM_UNIVERSAL_PINS; i++) {
-        int pin = UNIVERSAL_PINS[i];
-
-        // Skip pins used by LCD, Wire1, or active DHT
-        if (pin == LCD_SDA_PIN || pin == LCD_SCL_PIN) continue;
-        if (wire1SDA != -1 && (pin == wire1SDA || pin == wire1SCL)) continue;
-        if (dhtFound && pin == dhtPin) continue;
-
-        int adcVal = 0;
-        bool isSoil = probeSoilSensor(pin, adcVal);
-
-        Serial.printf("GPIO%d=%d ", pin, adcVal);
-
-        if (isSoil) {
-            bestPin = pin;
-            bestVal = adcVal;
-            break; // Stop and lock immediately onto this pin!
+    for (int i = 0; i < SAMPLES - 1; i++) {
+        for (int j = i + 1; j < SAMPLES; j++) {
+            if (buffer[i] > buffer[j]) {
+                int temp = buffer[i];
+                buffer[i] = buffer[j];
+                buffer[j] = temp;
+            }
         }
     }
-    Serial.println();
 
-    if (bestPin != -1) {
-        soilPin = bestPin;
-        soilFound = true;
-        soilFailCount = 0;
-        currentSoilRaw = bestVal;
-        currentSoilVolt = (bestVal / 4095.0f) * 3.3f;
-        float pct = ((float)(SOIL_AIR_VALUE - bestVal) / (float)(SOIL_AIR_VALUE - SOIL_WATER_VALUE)) * 100.0f;
-        currentSoilPct = constrain(pct, 0.0f, 100.0f);
-        Serial.printf("  [+] CAPACITIVE SOIL MOISTURE SENSOR DETECTED on GPIO %d (ADC: %d)!\n", soilPin, bestVal);
+    long sum = 0;
+    for (int i = 10; i < 20; i++) {
+        sum += buffer[i];
     }
+    outRawADC = sum / 10;
+    outVoltage = (outRawADC / ADC_RESOLUTION) * VREF;
+
+    float moisturePct = ((float)(AIR_VALUE - outRawADC) / (float)(AIR_VALUE - WATER_VALUE)) * 100.0f;
+    return constrain(moisturePct, 0.0f, 100.0f);
 }
 
 // =====================================================================
-//  WiFi Connection (Non-blocking retry)
+//  WiFi Connection
 // =====================================================================
 void connectWiFi() {
     if (WiFi.status() == WL_CONNECTED) return;
-    static unsigned long lastAttempt = 0;
-    if (millis() - lastAttempt < 15000 && lastAttempt != 0) return;
-    lastAttempt = millis();
-
-    Serial.print(F("  [..] WiFi Connecting to "));
-    Serial.println(WIFI_SSID);
-    WiFi.disconnect(true);
-    delay(50);
+    WiFi.disconnect(true); delay(200);
     WiFi.mode(WIFI_STA);
     WiFi.begin(WIFI_SSID, WIFI_PASS);
+    int n = 0;
+    while (WiFi.status() != WL_CONNECTED && n++ < 20) {
+        delay(500); Serial.print('.');
+    }
+    Serial.println(WiFi.status() == WL_CONNECTED ? " Connected!" : " Pending...");
 }
 
 // =====================================================================
-//  ThingsBoard Telemetry Transmitter
+//  ThingsBoard Telemetry Dispatch (Module 3: 12 Keys)
 // =====================================================================
-void sendThingsBoardTelemetry() {
-    if (WiFi.status() != WL_CONNECTED) return;
+void sendTelemetry(float tC, float tF, float hum, float hi,
+                   float lux, const char* lightLv,
+                   float soilPct, float soilV, int soilADC, const char* soilLv,
+                   bool fanOn) {
+    if (WiFi.status() != WL_CONNECTED) {
+        Serial.println(F(" Skipped (WiFi offline)"));
+        return;
+    }
+    String url = String(TB_HOST) + "/api/v1/" + TB_TOKEN + "/telemetry";
+    WiFiClientSecure client; client.setInsecure();
+    HTTPClient https; https.setTimeout(8000);
+    if (!https.begin(client, url)) {
+        Serial.println(F(" Error starting HTTPS"));
+        return;
+    }
+    https.addHeader("Content-Type", "application/json");
 
-    HTTPClient http;
-    char url[128];
-    snprintf(url, sizeof(url), "http://%s:%d/api/v1/%s/telemetry", TB_HOST, TB_PORT, TB_TOKEN);
+    // JSON Payload — Dedicated Module 3 keys (Never overwrites Module 1)
+    String p = "{";
+    // DHT11 Ambient for Module 3
+    p += "\"m3_temperature\":"   + String(tC, 1);
+    p += ",\"m3_temperatureF\":" + String(tF, 1);
+    p += ",\"m3_humidity\":"     + String(hum, 1);
+    p += ",\"m3_heatIndex\":"    + String(hi, 1);
+    // BH1750 Light
+    p += ",\"lux\":"           + String(lux, 1);
+    p += ",\"lightLevel\":\""   + String(lightLv) + "\"";
+    // Soil Moisture
+    p += ",\"soilMoisture\":"  + String(soilPct, 1);
+    p += ",\"moisture\":"      + String(soilPct, 1);
+    p += ",\"soil_moisture\":" + String(soilPct, 1);
+    p += ",\"soilVoltage\":"   + String(soilV, 3);
+    p += ",\"soilRawADC\":"    + String(soilADC);
+    p += ",\"soilStatus\":\""   + String(soilLv) + "\"";
+    // Cooling Fan Relay
+    p += ",\"fan_status\":\""   + String(fanOn ? "ON" : "OFF") + "\"";
+    p += ",\"relay_fan\":"      + String(fanOn ? "true" : "false");
+    p += "}";
 
-    http.begin(url);
-    http.addHeader("Content-Type", "application/json");
-
-    // Dynamically build JSON payload based on which sensors are active
-    String payload = "{";
-    payload += "\"hub_status\":\"ONLINE\",";
-    payload += "\"loop_count\":" + String(loopCount) + ",";
-    payload += "\"wifi_rssi\":" + String(WiFi.RSSI()) + ",";
-    payload += "\"uptime_sec\":" + String(millis() / 1000) + ",";
-
-    // DHT11 telemetry
-    if (dhtFound) {
-        payload += "\"dht11_online\":true,";
-        payload += "\"dht11_pin\":" + String(dhtPin) + ",";
-        payload += "\"temperature\":" + String(currentTempC, 1) + ",";
-        payload += "\"temperature_f\":" + String(currentTempF, 1) + ",";
-        payload += "\"humidity\":" + String(currentHum, 1) + ",";
-        payload += "\"heatIndex\":" + String(currentHI, 1) + ",";
+    int code = https.POST(p);
+    if (code > 0) {
+        Serial.printf(" HTTP %d\n", code);
     } else {
-        payload += "\"dht11_online\":false,";
+        Serial.printf(" Failed: %s\n", https.errorToString(code).c_str());
     }
-
-    // Soil Moisture telemetry
-    if (soilFound) {
-        payload += "\"soil_online\":true,";
-        payload += "\"soil_pin\":" + String(soilPin) + ",";
-        payload += "\"soil_moisture\":" + String(currentSoilPct, 1) + ",";
-        payload += "\"soil_raw\":" + String(currentSoilRaw) + ",";
-        payload += "\"soil_voltage\":" + String(currentSoilVolt, 2) + ",";
-    } else {
-        payload += "\"soil_online\":false,";
-    }
-
-    // BH1750 telemetry
-    if (bh1750Found) {
-        payload += "\"bh1750_online\":true,";
-        payload += "\"light_lux\":" + String(currentLux, 1) + ",";
-    } else {
-        payload += "\"bh1750_online\":false,";
-    }
-
-    // CCS811 telemetry
-    if (ccsFound) {
-        payload += "\"ccs811_online\":true,";
-        payload += "\"co2_ppm\":" + String(currentCO2) + ",";
-        payload += "\"tvoc_ppb\":" + String(currentTVOC) + ",";
-    } else {
-        payload += "\"ccs811_online\":false,";
-    }
-
-    // Close JSON
-    if (payload.endsWith(",")) {
-        payload.remove(payload.length() - 1);
-    }
-    payload += "}";
-
-    int code = http.POST(payload);
-    Serial.printf("  CLOUD -> ThingsBoard Telemetry (Token: %s...) ... HTTP %d\n",
-                  String(TB_TOKEN).substring(0, 6).c_str(), code);
-    http.end();
+    https.end();
 }
 
 // =====================================================================
-//  2004 LCD Display (Dynamic Page Rotator)
-// =====================================================================
-void updateLCD() {
-    if (!lcdFound || pLcd == nullptr) return;
-
-    pLcd->clear();
-    char buf[21];
-
-    if (lcdPage == 0) {
-        // --- SCREEN 1: Generic Hub Status & Auto-Detected Ports ---
-        pLcd->setCursor(0, 0);
-        pLcd->print(F("ESP32-S3 GENERIC HUB"));
-
-        pLcd->setCursor(0, 1);
-        if (dhtFound) {
-            snprintf(buf, sizeof(buf), "DHT11: GPIO %-2d [ON] ", dhtPin);
-        } else {
-            snprintf(buf, sizeof(buf), "DHT11: NOT FOUND    ");
-        }
-        pLcd->print(buf);
-
-        pLcd->setCursor(0, 2);
-        if (soilFound) {
-            snprintf(buf, sizeof(buf), "Soil:  GPIO %-2d [ON] ", soilPin);
-        } else {
-            snprintf(buf, sizeof(buf), "Soil:  NOT FOUND    ");
-        }
-        pLcd->print(buf);
-
-        pLcd->setCursor(0, 3);
-        snprintf(buf, sizeof(buf), "BH:%s CO2:%s",
-                 bh1750Found ? "[ON]" : "[--]",
-                 ccsFound ? "[ON]" : "[--]");
-        pLcd->print(buf);
-
-    } else if (lcdPage == 1) {
-        // --- SCREEN 2: Live Sensor Readings ---
-        pLcd->setCursor(0, 0);
-        if (dhtFound) {
-            snprintf(buf, sizeof(buf), "T:%4.1fC  H:%4.1f%%", currentTempC, currentHum);
-        } else {
-            snprintf(buf, sizeof(buf), "DHT11: (Not Pluggd)");
-        }
-        pLcd->print(buf);
-
-        pLcd->setCursor(0, 1);
-        if (soilFound) {
-            snprintf(buf, sizeof(buf), "Soil:%5.1f%% (%4d)", currentSoilPct, currentSoilRaw);
-        } else {
-            snprintf(buf, sizeof(buf), "Soil:  (Not Pluggd)");
-        }
-        pLcd->print(buf);
-
-        pLcd->setCursor(0, 2);
-        if (bh1750Found) {
-            snprintf(buf, sizeof(buf), "Light: %6.1f Lux   ", currentLux);
-        } else {
-            snprintf(buf, sizeof(buf), "Light: (Not Pluggd) ");
-        }
-        pLcd->print(buf);
-
-        pLcd->setCursor(0, 3);
-        snprintf(buf, sizeof(buf), "WiFi:%-3s IP:..%-4s",
-                 WiFi.status() == WL_CONNECTED ? "OK" : "NO",
-                 WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString().substring(10).c_str() : "OFF");
-        pLcd->print(buf);
-    }
-}
-
-// =====================================================================
-//  Setup Routine
+//  Setup
 // =====================================================================
 void setup() {
     Serial.begin(115200);
-    delay(2000);
-    Serial.setTxTimeoutMs(0);
+    delay(1000);
 
-    Serial.println();
     printLine('=');
-    Serial.println(F("  ESP32-S3 GENERIC AUTO-SENSING HUB (PLUG & PLAY)"));
-    Serial.println(F("  Features: Dynamic DHT11, Soil Moisture, BH1750, CCS811"));
+    Serial.println(F("  ESP32-S3 — MODULE 3: COMPLETE LIGHT, SOIL & ENVIRONMENT"));
+    printLine('=');
+    Serial.println(F("  Sensors : DHT11 (GPIO 4) | BH1750 (Wire1: SDA=15, SCL=16) | Soil (GPIO 1)"));
+    Serial.println(F("  Actuator: Cooling Fan Relay (GPIO 7, ON>=30.0C, OFF<27.0C)"));
+    Serial.println(F("  Display : 2004 I2C LCD (Wire: SDA=17, SCL=18)"));
+    Serial.println(F("  Cloud   : ThingsBoard"));
     printLine('=');
 
-    // 1. Initialize 2004 LCD on Dedicated Wire (SDA=17, SCL=18)
-    initLCD();
+    // 1. Initialize DHT11
+    dht.begin();
+    Serial.println(F("  [OK] DHT11 Initialized on GPIO 4"));
 
-    // 2. Initialize Sensors on Wire1 (SDA=15, SCL=16)
-    initI2CSensors();
+    // 2. Initialize Soil Sensor ADC
+    analogReadResolution(12);
+    analogSetAttenuation(ADC_11db); // 0 - 3.3V
+    pinMode(SOIL_PIN, INPUT);
+    Serial.println(F("  [OK] Soil Moisture Sensor on GPIO 1 (ADC1_CH0)"));
 
-    // 3. Scan Universal Pins for DHT11 and Soil Moisture
-    scanAndInitDHT();
-    scanAndInitSoil();
+    // 3. Initialize Cooling Fan Relay (GPIO 7 - Active LOW, default OFF)
+    pinMode(RELAY_FAN_PIN, OUTPUT);
+    digitalWrite(RELAY_FAN_PIN, RELAY_OFF);
+    fanState = false;
+    Serial.println(F("  [OK] Cooling Fan Relay on GPIO 7 (Default OFF)"));
 
-    // 4. Connect to WiFi
+    // 3. Initialize 2004 I2C LCD on Dedicated Wire (SDA=17, SCL=18)
+    delay(100); // Allow LCD power to stabilize
+    pinMode(LCD_SDA_PIN, INPUT_PULLUP);
+    pinMode(LCD_SCL_PIN, INPUT_PULLUP);
+    Wire.begin(LCD_SDA_PIN, LCD_SCL_PIN, 50000); // 50kHz for rock-solid stability
+    Wire.setTimeOut(25);
+    Serial.print(F("  [..] 2004 I2C LCD on Wire (SDA=17, SCL=18)... "));
+    byte lcdAddr = 0;
+    Wire.beginTransmission(0x27);
+    if (Wire.endTransmission() == 0) {
+        lcdAddr = 0x27;
+    } else {
+        Wire.beginTransmission(0x3F);
+        if (Wire.endTransmission() == 0) lcdAddr = 0x3F;
+    }
+    if (lcdAddr != 0) {
+        lcd = LiquidCrystal_I2C(lcdAddr, 20, 4);
+        lcd.init();
+        Wire.begin(LCD_SDA_PIN, LCD_SCL_PIN, 50000); // Re-assert pins in case library called Wire.begin() with no args
+        lcd.backlight();
+        lcd.display();
+        lcd.clear();
+
+        // 🌟 Welcome Splash Screen
+        lcd.setCursor(0, 0);
+        lcd.print(F("===================="));
+        lcd.setCursor(0, 1);
+        lcd.print(F("    Welcome to      "));
+        lcd.setCursor(0, 2);
+        lcd.print(F("     Module-3       "));
+        lcd.setCursor(0, 3);
+        lcd.print(F("===================="));
+        lcd_available = true;
+        Serial.printf("ONLINE at 0x%02X [OK]\n", lcdAddr);
+        delay(2500); // Show Welcome message clearly for 2.5 seconds
+
+        // System Initialization Status
+        lcd.clear();
+        lcd.setCursor(0, 0);
+        lcd.print(F("ESP32 MONITOR SYSTEM"));
+        lcd.setCursor(0, 1);
+        lcd.print(F("MODULE 3: LIGHT&SOIL"));
+        lcd.setCursor(0, 2);
+        lcd.print(F("WiFi Connecting...  "));
+        lcd.setCursor(0, 3);
+        lcd.print(F("Please wait...      "));
+    } else {
+        Serial.println(F("OFFLINE (Check SDA=17, SCL=18, VCC=5V, GND)"));
+    }
+
+    // 4. Initialize BH1750 on Wire1 (SDA=15, SCL=16)
+    pinMode(BH1750_SDA_PIN, INPUT_PULLUP);
+    pinMode(BH1750_SCL_PIN, INPUT_PULLUP);
+    Wire1.begin(BH1750_SDA_PIN, BH1750_SCL_PIN);
+    Serial.print(F("  [..] BH1750 Light Sensor on Wire1 (SDA=15, SCL=16)... "));
+    if (lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, 0x23, &Wire1)) {
+        bh1750_available = true;
+        Serial.println(F("ONLINE [OK]"));
+    } else if (lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, 0x5C, &Wire1)) {
+        bh1750_available = true;
+        Serial.println(F("ONLINE at 0x5C [OK]"));
+    } else {
+        Serial.println(F("OFFLINE! Check SDA=15, SCL=16, VCC=3.3V, ADDR=GND"));
+    }
+
+    // 5. Connect WiFi
+    Serial.print(F("  [..] WiFi Connecting"));
     connectWiFi();
 
+    if (lcd_available) {
+        lcd.setCursor(0, 2);
+        if (WiFi.status() == WL_CONNECTED) {
+            lcd.print(F("WiFi: Connected!    "));
+        } else {
+            lcd.print(F("WiFi: Offline       "));
+        }
+        lcd.setCursor(0, 3);
+        lcd.print(F("Starting System...  "));
+        delay(1200);
+        lcd.clear();
+    }
+
     printLine('=');
-    Serial.println(F("  System Initialized. Entering Main Telemetry Loop..."));
     Serial.println();
 }
 
@@ -618,178 +403,159 @@ void loop() {
     connectWiFi();
 
     unsigned long now = millis();
+    if (now - lastLog < INTERVAL) { delay(50); return; }
+    lastLog = now;
+    loopCount++;
 
-    // Periodic sensor read and telemetry transmission
-    if (now - lastSensorRead >= SENSOR_INTERVAL) {
-        lastSensorRead = now;
-        loopCount++;
+    // -------------------------------------------------------------
+    // 1. Read DHT11 Temperature & Humidity
+    // -------------------------------------------------------------
+    float hum  = dht.readHumidity();
+    float tC   = dht.readTemperature();
+    float tF   = dht.readTemperature(true);
+    bool  dhtOK = true;
 
-        // 1. Read DHT11 (if discovered)
-        if (dhtFound && pDht != nullptr) {
-            float h = pDht->readHumidity();
-            float t = pDht->readTemperature();
-            if (!isnan(h) && !isnan(t)) {
-                currentHum   = h;
-                currentTempC = t;
-                currentTempF = (t * 9.0f / 5.0f) + 32.0f;
-                currentHI    = pDht->computeHeatIndex(t, h, false);
-                dhtFailCount = 0;
-            } else {
-                dhtFailCount++;
-                if (dhtFailCount >= 2) {
-                    Serial.printf("  [!] DHT11 UNPLUGGED from GPIO %d! Re-enabling auto pin scan...\n", dhtPin);
-                    delete pDht;
-                    pDht = nullptr;
-                    dhtFound = false;
-                    dhtPin = -1;
-                    dhtFailCount = 0;
-                    currentHum = 0.0f;
-                    currentTempC = 0.0f;
-                    currentTempF = 0.0f;
-                    currentHI = 0.0f;
-                }
-            }
-        }
-
-        // 2. Read Capacitive Soil Moisture Sensor (if discovered)
-        if (soilFound && soilPin != -1) {
-            long sum = 0;
-            for (int k = 0; k < 10; k++) {
-                sum += analogRead(soilPin);
-                delay(2);
-            }
-            int raw = sum / 10;
-
-            // Verify active driver under pulldown (unplugged floating wire drops to 0)
-            pinMode(soilPin, INPUT_PULLDOWN);
-            delay(5);
-            int pdCheck = analogRead(soilPin);
-            pinMode(soilPin, INPUT);
-
-            if (pdCheck < 400) {
-                soilFailCount++;
-                if (soilFailCount >= 3) {
-                    Serial.printf("  [!] Soil Moisture Sensor UNPLUGGED from GPIO %d! Re-enabling auto scan...\n", soilPin);
-                    soilFound = false;
-                    soilPin = -1;
-                    soilFailCount = 0;
-                    currentSoilRaw = 0;
-                    currentSoilPct = 0.0f;
-                    currentSoilVolt = 0.0f;
-                }
-            } else {
-                soilFailCount = 0;
-                currentSoilRaw = raw;
-                currentSoilVolt = (raw / 4095.0f) * 3.3f;
-                float pct = ((float)(SOIL_AIR_VALUE - raw) / (float)(SOIL_AIR_VALUE - SOIL_WATER_VALUE)) * 100.0f;
-                currentSoilPct = constrain(pct, 0.0f, 100.0f);
-            }
-        }
-
-        // 3. Read BH1750 Light (if discovered on Wire1)
-        if (bh1750Found) {
-            float lux = lightMeter.readLightLevel();
-            if (lux >= 0.0f) {
-                currentLux = lux;
-                bh1750FailCount = 0;
-            } else {
-                bh1750FailCount++;
-                if (bh1750FailCount >= 4) {
-                    Serial.printf("  [!] BH1750 UNPLUGGED from Wire1 (SDA=%d, SCL=%d)! Re-enabling auto scan...\n", wire1SDA, wire1SCL);
-                    bh1750Found = false;
-                    currentLux = 0.0f;
-                    wire1SDA = -1;
-                    wire1SCL = -1;
-                    bh1750FailCount = 0;
-                }
-            }
-        }
-
-        // 4. Read CCS811 CO2 (if discovered on Wire1)
-        if (ccsFound) {
-            if (ccs.available() && !ccs.readData()) {
-                currentCO2  = ccs.geteCO2();
-                currentTVOC = ccs.getTVOC();
-            }
-        }
-
-        // 5. Print Dashboard to Serial Monitor
-        Serial.println();
-        printLine('=');
-        Serial.printf("  GENERIC HUB | READING #%-4lu | UPTIME: %s | WiFi: %s\n",
-                      loopCount, getUptime().c_str(),
-                      WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString().c_str() : "Disconnected");
-        printLine('-');
-
-        // Section: DHT11
-        if (dhtFound) {
-            Serial.printf("  [+] DHT11  [Auto-detected on GPIO %d]\n", dhtPin);
-            Serial.printf("      Temperature : %5.1f C  (%5.1f F)\n", currentTempC, currentTempF);
-            Serial.printf("      Humidity    : %5.1f %%\n", currentHum);
-            Serial.printf("      Heat Index  : %5.1f C\n", currentHI);
-        } else {
-            Serial.println(F("  [-] DHT11  [NOT CONNECTED / NOT DETECTED]"));
-        }
-        printLine('-');
-
-        // Section: Soil Moisture
-        if (soilFound) {
-            Serial.printf("  [+] Soil Moisture [Auto-detected on GPIO %d]\n", soilPin);
-            Serial.printf("      Moisture    : %5.1f %%\n", currentSoilPct);
-            Serial.printf("      Raw ADC     : %5d  (%.2f V)\n", currentSoilRaw, currentSoilVolt);
-        } else {
-            Serial.println(F("  [-] Soil Moisture [NOT CONNECTED / NOT DETECTED]"));
-        }
-        printLine('-');
-
-        // Section: BH1750
-        if (bh1750Found) {
-            Serial.printf("  [+] BH1750 [Auto-detected at I2C 0x23 on Wire1 (SDA=%d, SCL=%d)]\n", wire1SDA, wire1SCL);
-            Serial.printf("      Light Level : %6.1f Lux\n", currentLux);
-        } else {
-            Serial.println(F("  [-] BH1750 [NOT CONNECTED / NOT DETECTED]"));
-        }
-        printLine('-');
-
-        // Section: CCS811
-        if (ccsFound) {
-            Serial.printf("  [+] CCS811 [Auto-detected at I2C 0x5A on Wire1 (SDA=%d, SCL=%d)]\n", wire1SDA, wire1SCL);
-            Serial.printf("      eCO2        : %5u ppm\n", currentCO2);
-            Serial.printf("      TVOC        : %5u ppb\n", currentTVOC);
-        } else {
-            Serial.println(F("  [-] CCS811 [NOT CONNECTED / NOT DETECTED]"));
-        }
-        printLine('-');
-
-        // Send to ThingsBoard
-        sendThingsBoardTelemetry();
-        printLine('=');
+    if (isnan(hum) || isnan(tC)) {
+        hum = 50.0f; tC = 25.0f; tF = 77.0f;
+        dhtOK = false;
     }
+    float hi = dht.computeHeatIndex(tC, hum, false);
 
-    // Periodic LCD screen rotation
-    if (now - lastLcdSwitch >= LCD_PAGE_TIME) {
-        lastLcdSwitch = now;
-        lcdPage = (lcdPage + 1) % 2;
-        updateLCD();
-    }
-
-    // Hot-plug auto-detection for sensors not yet connected
-    static unsigned long lastAutoScan = 0;
-    if (now - lastAutoScan >= 5000) {
-        lastAutoScan = now;
-        if (!lcdFound) {
-            initLCD();
-        }
-        if (!bh1750Found || !ccsFound) {
-            initI2CSensors();
-        }
-        if (!dhtFound) {
-            scanAndInitDHT();
-        }
-        if (!soilFound) {
-            scanAndInitSoil();
+    // -------------------------------------------------------------
+    // Cooling Fan Control Logic (Hysteresis: ON >= 30.0C, OFF < 27.0C)
+    // -------------------------------------------------------------
+    if (dhtOK) {
+        if (!fanState && tC >= TEMP_FAN_ON_THRESH) {
+            fanState = true;
+            digitalWrite(RELAY_FAN_PIN, RELAY_ON);
+            Serial.println(F("  [!] TEMP >= 30.0C -> FAN RELAY [ON]"));
+        } else if (fanState && tC < TEMP_FAN_OFF_THRESH) {
+            fanState = false;
+            digitalWrite(RELAY_FAN_PIN, RELAY_OFF);
+            Serial.println(F("  [!] TEMP < 27.0C -> FAN RELAY [OFF]"));
         }
     }
 
-    delay(20);
+    // -------------------------------------------------------------
+    // 2. Read BH1750 Light Sensor (with Master Calibration)
+    // -------------------------------------------------------------
+    float rawLux = 0.0f;
+    float lux = 0.0f;
+    if (bh1750_available) {
+        float r = lightMeter.readLightLevel();
+        if (r >= 0) {
+            rawLux = r;
+            lux = rawLux * LIGHT_CAL_FACTOR;
+            currentLux = lux;
+        }
+    }
+    const char* lightStatus = getLightStatus(lux);
+
+    // -------------------------------------------------------------
+    // 3. Read Capacitive Soil Moisture Sensor v2.0
+    // -------------------------------------------------------------
+    int soilADC = 0;
+    float soilVoltage = 0.0f;
+    float soilMoisturePct = readSoilMoisture(soilADC, soilVoltage);
+    const char* soilStatus = getSoilStatus(soilMoisturePct);
+
+    // =============================================================
+    //  Professional Serial Dashboard
+    // =============================================================
+    Serial.println();
+    printLine('=');
+    Serial.printf("  MODULE 3 | READING #%-4lu | UPTIME: %s | WiFi: %s\n",
+        loopCount, uptime().c_str(),
+        WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString().c_str() : "Disconnected");
+    printLine('=');
+
+    // Section 1: Temperature & Humidity
+    Serial.println(F("  AMBIENT ENVIRONMENT  [DHT11 - GPIO 4]"));
+    printLine();
+    if (dhtOK) {
+        Serial.printf("    Temperature  :  %5.1f C   (%5.1f F)\n", tC, tF);
+        Serial.printf("    Humidity     :  %5.1f %%\n", hum);
+        Serial.printf("    Heat Index   :  %5.1f C\n", hi);
+    } else {
+        Serial.println(F("    [WARNING] DHT11 read failed, using 25.0C fallback."));
+    }
+    printLine();
+
+    // Section 2: Cooling Fan Relay
+    Serial.printf("  COOLING FAN RELAY  [IN1 -> GPIO 7]  [%s]\n", fanState ? "FAN ON" : "FAN OFF");
+    printLine();
+    Serial.printf("    Fan Status   :  %s  (Pin Level: %s)\n",
+                  fanState ? "ACTIVE (Fan Running)" : "STANDBY (Fan Stopped)",
+                  fanState ? "LOW (Active)" : "HIGH (Inactive)");
+    Serial.printf("    Control Rule :  Turn ON >= %.1f C  |  Turn OFF < %.1f C\n",
+                  TEMP_FAN_ON_THRESH, TEMP_FAN_OFF_THRESH);
+    printLine();
+
+    // Section 3: Light Sensor
+    Serial.printf("  LIGHT INTENSITY  [BH1750 - Wire1 SDA=15 SCL=16]  %s\n",
+                  bh1750_available ? "[ONLINE]" : "[OFFLINE]");
+    printLine();
+    if (bh1750_available) {
+        Serial.printf("    Illuminance  :  %8.1f lx   [%s]\n", lux, lightStatus);
+        Serial.printf("    Raw Sensor   :  %8.1f lx   (Calibrated: x%.4f)\n", rawLux, LIGHT_CAL_FACTOR);
+        int lightBars = min((int)(lux / 200.0f), 30);
+        Serial.print(F("    Light Bar    :  ["));
+        for (int i = 0; i < lightBars; i++) Serial.print('#');
+        for (int i = lightBars; i < 30; i++) Serial.print(' ');
+        Serial.printf("] %.0f lx\n", lux);
+    } else {
+        Serial.println(F("    [ERR] Sensor not detected. Check wiring: SDA=15, SCL=16, ADDR=GND"));
+    }
+    printLine();
+
+    // Section 4: Soil Moisture Sensor
+    Serial.println(F("  SOIL MOISTURE  [Capacitive v2.0 - GPIO 1]"));
+    printLine();
+    Serial.printf("    Moisture     :  %5.1f %%      [%s]\n", soilMoisturePct, soilStatus);
+    Serial.printf("    Analog ADC   :  %5d / 4095  (Air ~%d, Water ~%d)\n", soilADC, AIR_VALUE, WATER_VALUE);
+    Serial.printf("    Sensor Volt  :  %5.3f V\n", soilVoltage);
+
+    int soilBars = min((int)(soilMoisturePct / 4.0f), 25);
+    Serial.print(F("    Moisture Bar :  ["));
+    for (int i = 0; i < soilBars; i++) Serial.print('#');
+    for (int i = soilBars; i < 25; i++) Serial.print(' ');
+    Serial.printf("] %.1f %%\n", soilMoisturePct);
+    printLine();
+
+    // Section 5: Cloud Telemetry
+    Serial.print(F("  CLOUD -> ThingsBoard Telemetry (12 keys) ..."));
+    sendTelemetry(tC, tF, hum, hi, lux, lightStatus, soilMoisturePct, soilVoltage, soilADC, soilStatus, fanState);
+
+    printLine('=');
+
+    // -------------------------------------------------------------
+    // 5. Update 2004 Character LCD Display (Live Screen)
+    // -------------------------------------------------------------
+    if (lcd_available) {
+        char buf[21];
+
+        // Row 0: Temperature, Humidity & Fan Status
+        snprintf(buf, sizeof(buf), "T:%4.1fC H:%2.0f%% F:%-3s ", tC, hum, fanState ? "ON" : "OFF");
+        lcd.setCursor(0, 0);
+        lcd.print(buf);
+
+        // Row 1: Ambient Light (Lux) & Status
+        snprintf(buf, sizeof(buf), "Lux : %5.0f [%-6s] ", lux, shortLightStatus(lux));
+        lcd.setCursor(0, 1);
+        lcd.print(buf);
+
+        // Row 2: Soil Moisture (%) & Status
+        snprintf(buf, sizeof(buf), "Soil: %4.1f%% [%-5s] ", soilMoisturePct, shortSoilStatus(soilMoisturePct));
+        lcd.setCursor(0, 2);
+        lcd.print(buf);
+
+        // Row 3: WiFi Status & Uptime
+        if (WiFi.status() == WL_CONNECTED) {
+            snprintf(buf, sizeof(buf), "WiFi:OK   Up:%s", uptime().c_str());
+        } else {
+            snprintf(buf, sizeof(buf), "WiFi: Offline       ");
+        }
+        lcd.setCursor(0, 3);
+        lcd.print(buf);
+    }
 }
