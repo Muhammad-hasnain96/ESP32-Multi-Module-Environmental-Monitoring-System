@@ -1,13 +1,16 @@
 // =====================================================================
-// ESP32-S3 — GENERIC SMART SENSOR HUB (True Auto-Detecting System)
+// ESP32-S3 — GENERIC SMART SENSOR HUB (Universal Plug-and-Play)
 // =====================================================================
-// Plug-and-Play Hub Architecture:
-//   - LCD 2004: Dedicated Wire on GPIO 17 (SDA) & GPIO 18 (SCL)
-//   - I2C Sensors (BH1750, CCS811): Wire1 on GPIO 15 (SDA) & GPIO 16 (SCL)
-//     (Supports reverse 16/15 auto-detection)
-//   - DHT11 Auto-Discovery: Scans GPIOs (4, 5, 6, 7, 1, 2, 8, 9, 10)
-//     with hot-unplug detection and automatic pin switching!
-//   - Dynamic 2004 LCD: Rotating live multi-page display.
+// Plug-and-Play Dynamic Features:
+//   - Dedicated LCD 2004 on Wire: GPIO 17 (SDA) & GPIO 18 (SCL)
+//   - I2C Sensors (BH1750, CCS811) on Wire1: GPIO 15 & 16 (or candidate pairs)
+//   - Universal Analog / Digital Auto-Sensing Pins:
+//     Candidate GPIOs: 4, 5, 6, 7, 1, 2, 8, 9, 10
+//     * If DHT11 is plugged -> Auto-detects as DHT11 (Digital handshake)
+//     * If Soil Sensor is plugged -> Auto-detects as Soil Moisture (Analog ADC)
+//     * Unplug either -> Automatic hot-unplug detection & re-scan!
+//     * Swap pins anytime -> Auto-reconfigures instantly!
+//   - Dynamic 2004 LCD: Rotating multi-page dashboard.
 //   - ThingsBoard Cloud: Real-time telemetry streaming.
 //
 // Access Token: 2HGvWTV145aFOdJbjAwQ
@@ -35,7 +38,7 @@ const int   TB_PORT   = 80;
 
 // Update intervals
 const unsigned long SENSOR_INTERVAL = 3000;   // Sensor read & telemetry every 3s
-const unsigned long LCD_PAGE_TIME   = 4000;   // Rotate LCD screen every 4s
+const unsigned long LCD_PAGE_TIME   = 3500;   // Rotate LCD screen every 3.5s
 
 // =====================================================================
 //  Hardware Pin Assignments
@@ -59,9 +62,13 @@ const I2CPair WIRE1_CANDIDATES[] = {
 };
 const int NUM_WIRE1_CANDIDATES = sizeof(WIRE1_CANDIDATES) / sizeof(WIRE1_CANDIDATES[0]);
 
-// 3. Candidate single-wire GPIOs for DHT11 auto-scan
-const int DHT_CANDIDATES[] = { 4, 5, 6, 7, 1, 2, 8, 9, 10 };
-const int NUM_DHT_CANDIDATES = sizeof(DHT_CANDIDATES) / sizeof(DHT_CANDIDATES[0]);
+// 3. Universal Candidate GPIOs (All are digital I/O AND ADC1 channels on ESP32-S3)
+const int UNIVERSAL_PINS[] = { 4, 5, 6, 7, 1, 2, 8, 9, 10 };
+const int NUM_UNIVERSAL_PINS = sizeof(UNIVERSAL_PINS) / sizeof(UNIVERSAL_PINS[0]);
+
+// Soil Moisture Calibration Constants
+const int SOIL_AIR_VALUE   = 3000; // Dry air (0% moisture)
+const int SOIL_WATER_VALUE = 1350; // In water / fully saturated (100% moisture)
 
 // =====================================================================
 //  Global Sensor State & Pointers
@@ -85,7 +92,7 @@ bool ccsFound = false;
 uint16_t currentCO2  = 400;
 uint16_t currentTVOC = 0;
 
-// DHT11 State (Single-Wire GPIO)
+// DHT11 State (Single-Wire Digital)
 DHT* pDht = nullptr;
 int  dhtPin = -1;
 bool dhtFound = false;
@@ -94,6 +101,14 @@ float currentTempC = 0.0f;
 float currentTempF = 0.0f;
 float currentHum   = 0.0f;
 float currentHI    = 0.0f;
+
+// Soil Moisture State (Single-Wire Analog ADC1)
+int   soilPin = -1;
+bool  soilFound = false;
+int   soilFailCount = 0;
+int   currentSoilRaw = 0;
+float currentSoilPct = 0.0f;
+float currentSoilVolt = 0.0f;
 
 // Timing trackers
 unsigned long lastSensorRead = 0;
@@ -134,6 +149,7 @@ void initLCD() {
         int sda = LCD_PAIRS[i][0];
         int scl = LCD_PAIRS[i][1];
         if (dhtPin != -1 && (sda == dhtPin || scl == dhtPin)) continue;
+        if (soilPin != -1 && (sda == soilPin || scl == soilPin)) continue;
         if (wire1SDA != -1 && (sda == wire1SDA || scl == wire1SCL)) continue;
 
         pinMode(sda, INPUT_PULLUP);
@@ -156,7 +172,7 @@ void initLCD() {
             if (pLcd != nullptr) delete pLcd;
             pLcd = new LiquidCrystal_I2C(lcdAddr, 20, 4);
             pLcd->init();
-            Wire.begin(sda, scl, 50000); // Re-assert pins
+            Wire.begin(sda, scl, 50000);
             pLcd->backlight();
             pLcd->clear();
             pLcd->setCursor(0, 0);
@@ -185,8 +201,9 @@ void initI2CSensors() {
         int sda = WIRE1_CANDIDATES[p].sda;
         int scl = WIRE1_CANDIDATES[p].scl;
 
-        // Skip pins if currently used by DHT11 or LCD
+        // Skip pins if currently used
         if (dhtPin != -1 && (sda == dhtPin || scl == dhtPin)) continue;
+        if (soilPin != -1 && (sda == soilPin || scl == soilPin)) continue;
         if (sda == LCD_SDA_PIN || scl == LCD_SCL_PIN) continue;
 
         pinMode(sda, INPUT_PULLUP);
@@ -234,12 +251,12 @@ void initI2CSensors() {
             }
         }
 
-        if (foundAny) break; // Locked onto active sensor pair
+        if (foundAny) break;
     }
 }
 
 // =====================================================================
-//  DHT11 Handshake Probe & Pin Scanner
+//  DHT11 Handshake Probe & Scanner
 // =====================================================================
 bool probeDHT11(int pin) {
     pinMode(pin, OUTPUT);
@@ -280,12 +297,15 @@ bool probeDHT11(int pin) {
 }
 
 void scanAndInitDHT() {
-    for (int i = 0; i < NUM_DHT_CANDIDATES; i++) {
-        int pin = DHT_CANDIDATES[i];
+    if (dhtFound) return;
 
-        // Skip pins used by LCD or Wire1
+    for (int i = 0; i < NUM_UNIVERSAL_PINS; i++) {
+        int pin = UNIVERSAL_PINS[i];
+
+        // Skip pins used by LCD, Wire1, or active Soil sensor
         if (pin == LCD_SDA_PIN || pin == LCD_SCL_PIN) continue;
         if (wire1SDA != -1 && (pin == wire1SDA || pin == wire1SCL)) continue;
+        if (soilFound && pin == soilPin) continue;
 
         if (probeDHT11(pin)) {
             dhtPin = pin;
@@ -295,6 +315,61 @@ void scanAndInitDHT() {
             pDht = new DHT(dhtPin, DHT11);
             pDht->begin();
             Serial.printf("  [+] DHT11 DETECTED & INITIALIZED on GPIO %d!\n", dhtPin);
+            return;
+        }
+    }
+}
+
+// =====================================================================
+//  Capacitive Soil Moisture Probe & Scanner (Analog ADC1)
+// =====================================================================
+bool probeSoilSensor(int pin) {
+    // If pin is used by LCD, Wire1, or active DHT, skip
+    if (pin == LCD_SDA_PIN || pin == LCD_SCL_PIN) return false;
+    if (wire1SDA != -1 && (pin == wire1SDA || pin == wire1SCL)) return false;
+    if (dhtFound && pin == dhtPin) return false;
+
+    // Electrical signature check:
+    // Floating pin pulled down drops to 0. Active soil sensor output (~1.0V-2.8V)
+    // overcomes internal pull-down resistor and stays within 800 - 3500 ADC counts.
+    pinMode(pin, INPUT_PULLDOWN);
+    delay(10);
+    int pdVal = analogRead(pin);
+    pinMode(pin, INPUT);
+    delay(5);
+    int normVal = analogRead(pin);
+
+    if (pdVal >= 800 && pdVal <= 3500 && normVal >= 800 && normVal <= 3500) {
+        // Average 5 samples to confirm steady analog DC
+        long sum = 0;
+        for (int k = 0; k < 5; k++) {
+            sum += analogRead(pin);
+            delay(3);
+        }
+        int avg = sum / 5;
+        if (avg >= 800 && avg <= 3500) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void scanAndInitSoil() {
+    if (soilFound) return;
+
+    for (int i = 0; i < NUM_UNIVERSAL_PINS; i++) {
+        int pin = UNIVERSAL_PINS[i];
+
+        // Skip pins used by LCD, Wire1, or active DHT
+        if (pin == LCD_SDA_PIN || pin == LCD_SCL_PIN) continue;
+        if (wire1SDA != -1 && (pin == wire1SDA || pin == wire1SCL)) continue;
+        if (dhtFound && pin == dhtPin) continue;
+
+        if (probeSoilSensor(pin)) {
+            soilPin = pin;
+            soilFound = true;
+            soilFailCount = 0;
+            Serial.printf("  [+] CAPACITIVE SOIL MOISTURE SENSOR DETECTED on GPIO %d!\n", soilPin);
             return;
         }
     }
@@ -349,6 +424,17 @@ void sendThingsBoardTelemetry() {
         payload += "\"dht11_online\":false,";
     }
 
+    // Soil Moisture telemetry
+    if (soilFound) {
+        payload += "\"soil_online\":true,";
+        payload += "\"soil_pin\":" + String(soilPin) + ",";
+        payload += "\"soil_moisture\":" + String(currentSoilPct, 1) + ",";
+        payload += "\"soil_raw\":" + String(currentSoilRaw) + ",";
+        payload += "\"soil_voltage\":" + String(currentSoilVolt, 2) + ",";
+    } else {
+        payload += "\"soil_online\":false,";
+    }
+
     // BH1750 telemetry
     if (bh1750Found) {
         payload += "\"bh1750_online\":true,";
@@ -401,19 +487,17 @@ void updateLCD() {
         pLcd->print(buf);
 
         pLcd->setCursor(0, 2);
-        if (bh1750Found) {
-            snprintf(buf, sizeof(buf), "BH1750 Light:   [ON] ");
+        if (soilFound) {
+            snprintf(buf, sizeof(buf), "Soil:  GPIO %-2d [ON] ", soilPin);
         } else {
-            snprintf(buf, sizeof(buf), "BH1750 Light:  [OFF] ");
+            snprintf(buf, sizeof(buf), "Soil:  NOT FOUND    ");
         }
         pLcd->print(buf);
 
         pLcd->setCursor(0, 3);
-        if (ccsFound) {
-            snprintf(buf, sizeof(buf), "CCS811 CO2:     [ON] ");
-        } else {
-            snprintf(buf, sizeof(buf), "CCS811 CO2:    [OFF] ");
-        }
+        snprintf(buf, sizeof(buf), "BH:%s CO2:%s",
+                 bh1750Found ? "[ON]" : "[--]",
+                 ccsFound ? "[ON]" : "[--]");
         pLcd->print(buf);
 
     } else if (lcdPage == 1) {
@@ -427,18 +511,18 @@ void updateLCD() {
         pLcd->print(buf);
 
         pLcd->setCursor(0, 1);
-        if (bh1750Found) {
-            snprintf(buf, sizeof(buf), "Light: %6.1f Lux   ", currentLux);
+        if (soilFound) {
+            snprintf(buf, sizeof(buf), "Soil:%5.1f%% (%4d)", currentSoilPct, currentSoilRaw);
         } else {
-            snprintf(buf, sizeof(buf), "Light: (Not Pluggd) ");
+            snprintf(buf, sizeof(buf), "Soil:  (Not Pluggd)");
         }
         pLcd->print(buf);
 
         pLcd->setCursor(0, 2);
-        if (ccsFound) {
-            snprintf(buf, sizeof(buf), "CO2: %4u ppm", currentCO2);
+        if (bh1750Found) {
+            snprintf(buf, sizeof(buf), "Light: %6.1f Lux   ", currentLux);
         } else {
-            snprintf(buf, sizeof(buf), "CO2: (Not Pluggd)  ");
+            snprintf(buf, sizeof(buf), "Light: (Not Pluggd) ");
         }
         pLcd->print(buf);
 
@@ -461,7 +545,7 @@ void setup() {
     Serial.println();
     printLine('=');
     Serial.println(F("  ESP32-S3 GENERIC AUTO-SENSING HUB (PLUG & PLAY)"));
-    Serial.println(F("  Architecture: Dual I2C (Wire=LCD, Wire1=Sensors) + Auto DHT"));
+    Serial.println(F("  Features: Dynamic DHT11, Soil Moisture, BH1750, CCS811"));
     printLine('=');
 
     // 1. Initialize 2004 LCD on Dedicated Wire (SDA=17, SCL=18)
@@ -470,8 +554,9 @@ void setup() {
     // 2. Initialize Sensors on Wire1 (SDA=15, SCL=16)
     initI2CSensors();
 
-    // 3. Scan and initialize DHT11
+    // 3. Scan Universal Pins for DHT11 and Soil Moisture
     scanAndInitDHT();
+    scanAndInitSoil();
 
     // 4. Connect to WiFi
     connectWiFi();
@@ -521,7 +606,43 @@ void loop() {
             }
         }
 
-        // 2. Read BH1750 Light (if discovered on Wire1)
+        // 2. Read Capacitive Soil Moisture Sensor (if discovered)
+        if (soilFound && soilPin != -1) {
+            // Read 10 samples and average
+            long sum = 0;
+            for (int k = 0; k < 10; k++) {
+                sum += analogRead(soilPin);
+                delay(2);
+            }
+            int raw = sum / 10;
+
+            // Verify pin is still actively driven (hot-unplug check)
+            pinMode(soilPin, INPUT_PULLDOWN);
+            delay(2);
+            int pdCheck = analogRead(soilPin);
+            pinMode(soilPin, INPUT);
+
+            if (pdCheck < 500 || raw > 3800) {
+                soilFailCount++;
+                if (soilFailCount >= 2) {
+                    Serial.printf("  [!] Soil Moisture Sensor UNPLUGGED from GPIO %d! Re-enabling auto scan...\n", soilPin);
+                    soilFound = false;
+                    soilPin = -1;
+                    soilFailCount = 0;
+                    currentSoilRaw = 0;
+                    currentSoilPct = 0.0f;
+                    currentSoilVolt = 0.0f;
+                }
+            } else {
+                soilFailCount = 0;
+                currentSoilRaw = raw;
+                currentSoilVolt = (raw / 4095.0f) * 3.3f;
+                float pct = ((float)(SOIL_AIR_VALUE - raw) / (float)(SOIL_AIR_VALUE - SOIL_WATER_VALUE)) * 100.0f;
+                currentSoilPct = constrain(pct, 0.0f, 100.0f);
+            }
+        }
+
+        // 3. Read BH1750 Light (if discovered on Wire1)
         if (bh1750Found) {
             float lux = lightMeter.readLightLevel();
             if (lux >= 0.0f) {
@@ -540,7 +661,7 @@ void loop() {
             }
         }
 
-        // 3. Read CCS811 CO2 (if discovered on Wire1)
+        // 4. Read CCS811 CO2 (if discovered on Wire1)
         if (ccsFound) {
             if (ccs.available() && !ccs.readData()) {
                 currentCO2  = ccs.geteCO2();
@@ -548,7 +669,7 @@ void loop() {
             }
         }
 
-        // 4. Print Dashboard to Serial Monitor
+        // 5. Print Dashboard to Serial Monitor
         Serial.println();
         printLine('=');
         Serial.printf("  GENERIC HUB | READING #%-4lu | UPTIME: %s | WiFi: %s\n",
@@ -564,6 +685,16 @@ void loop() {
             Serial.printf("      Heat Index  : %5.1f C\n", currentHI);
         } else {
             Serial.println(F("  [-] DHT11  [NOT CONNECTED / NOT DETECTED]"));
+        }
+        printLine('-');
+
+        // Section: Soil Moisture
+        if (soilFound) {
+            Serial.printf("  [+] Soil Moisture [Auto-detected on GPIO %d]\n", soilPin);
+            Serial.printf("      Moisture    : %5.1f %%\n", currentSoilPct);
+            Serial.printf("      Raw ADC     : %5d  (%.2f V)\n", currentSoilRaw, currentSoilVolt);
+        } else {
+            Serial.println(F("  [-] Soil Moisture [NOT CONNECTED / NOT DETECTED]"));
         }
         printLine('-');
 
@@ -600,7 +731,7 @@ void loop() {
 
     // Hot-plug auto-detection for sensors not yet connected
     static unsigned long lastAutoScan = 0;
-    if (now - lastAutoScan >= 6000) {
+    if (now - lastAutoScan >= 5000) {
         lastAutoScan = now;
         if (!lcdFound) {
             initLCD();
@@ -610,6 +741,9 @@ void loop() {
         }
         if (!dhtFound) {
             scanAndInitDHT();
+        }
+        if (!soilFound) {
+            scanAndInitSoil();
         }
     }
 
