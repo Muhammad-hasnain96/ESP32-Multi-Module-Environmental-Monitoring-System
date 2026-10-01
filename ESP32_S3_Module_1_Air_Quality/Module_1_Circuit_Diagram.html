@@ -3,245 +3,278 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ESP32-S3 Module 1 Realistic Fritzing Wiring & PCB Schematic</title>
+  <title>ESP32-S3 Module 1 Direct Pin-to-Pin Wiring Diagram</title>
   <script src="https://www.gstatic.com/antigravity/web/dev/tailwindcss.min.js"></script>
   <style>
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      background-color: var(--background, #0b1120);
+      background-color: var(--background, #090d16);
       color: var(--foreground, #f8fafc);
     }
     .pin-badge {
       display: inline-flex;
       align-items: center;
-      padding: 0.2rem 0.55rem;
-      border-radius: 0.375rem;
+      padding: 0.15rem 0.5rem;
+      border-radius: 4px;
       font-weight: 700;
       font-size: 0.75rem;
       font-family: monospace;
-    }
-    .glass-card {
-      background: rgba(15, 23, 42, 0.85);
-      backdrop-filter: blur(12px);
-      border: 1px solid rgba(56, 189, 248, 0.2);
     }
   </style>
 </head>
 <body class="p-4 md:p-6 min-h-screen">
   <div class="max-w-6xl mx-auto space-y-6">
 
-    <!-- Header Banner -->
-    <div class="bg-gradient-to-r from-sky-950/80 via-slate-900 to-teal-950/80 border border-sky-500/30 rounded-2xl p-6 shadow-2xl">
+    <!-- Top Banner -->
+    <div class="bg-gradient-to-r from-slate-900 via-sky-950/70 to-slate-900 border border-sky-500/30 rounded-2xl p-6 shadow-2xl">
       <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
         <div>
           <div class="flex items-center space-x-2.5">
-            <span class="px-2.5 py-1 text-xs font-extrabold bg-sky-500/20 text-sky-400 border border-sky-500/40 rounded-md tracking-wider">
-              REALISTIC BREADBOARD & PCB SCHEMATIC
+            <span class="px-2.5 py-1 text-xs font-extrabold bg-sky-500/20 text-sky-300 border border-sky-500/40 rounded-md tracking-wider">
+              DIRECT POINT-TO-POINT WIRING DIAGRAM
             </span>
-            <span class="text-xs text-slate-400 font-mono">Module 1 • Hardware v1.0</span>
+            <span class="text-xs text-slate-400 font-mono">Zero Breadboard • Direct Pin Connectors</span>
           </div>
-          <h1 class="text-2xl lg:text-3xl font-extrabold text-white mt-2 tracking-tight">
-            💨 ESP32-S3 Air Quality & Gas Monitoring System
+          <h1 class="text-2xl lg:text-3xl font-extrabold text-white mt-2">
+            ESP32-S3 Module 1: Air Quality & Gas Monitoring
           </h1>
-          <p class="text-sm text-sky-200/80 mt-1">
-            Complete Realistic Wiring Visual, Exact Pin-to-Pin Netlist & PCB Design Standards
+          <p class="text-sm text-slate-300 mt-1">
+            Complete physical module-to-ESP32 direct wire traces with color-coded signal routing
           </p>
         </div>
 
-        <!-- Quick Spec Pills -->
         <div class="grid grid-cols-3 gap-2.5 text-xs font-mono">
-          <div class="bg-slate-900/90 border border-slate-700/80 rounded-xl p-3 text-center shadow-inner">
-            <div class="text-slate-400 text-[11px]">Primary DC In</div>
-            <div class="font-bold text-emerald-400 text-sm mt-0.5">5.0V (2A)</div>
+          <div class="bg-slate-950/80 border border-slate-800 rounded-xl p-3 text-center">
+            <div class="text-slate-400 text-[11px]">Power Input</div>
+            <div class="font-bold text-emerald-400 text-sm">5V @ 2A</div>
           </div>
-          <div class="bg-slate-900/90 border border-slate-700/80 rounded-xl p-3 text-center shadow-inner">
-            <div class="text-slate-400 text-[11px]">Heater Power</div>
-            <div class="font-bold text-rose-400 text-sm mt-0.5">160mA (5V)</div>
+          <div class="bg-slate-950/80 border border-slate-800 rounded-xl p-3 text-center">
+            <div class="text-slate-400 text-[11px]">Logic Level</div>
+            <div class="font-bold text-amber-400 text-sm">3.3V</div>
           </div>
-          <div class="bg-slate-900/90 border border-slate-700/80 rounded-xl p-3 text-center shadow-inner">
-            <div class="text-slate-400 text-[11px]">Dual I2C Buses</div>
-            <div class="font-bold text-cyan-400 text-sm mt-0.5">Wire + Wire1</div>
+          <div class="bg-slate-950/80 border border-slate-800 rounded-xl p-3 text-center">
+            <div class="text-slate-400 text-[11px]">Dual I2C</div>
+            <div class="font-bold text-cyan-400 text-sm">Wire + Wire1</div>
           </div>
         </div>
       </div>
     </div>
 
-    <!-- Realistic Fritzing Breadboard Diagram View -->
-    <div class="glass-card rounded-2xl p-5 shadow-2xl">
-      <div class="flex items-center justify-between mb-3">
+    <!-- Direct Wiring Diagram Image Card -->
+    <div class="bg-slate-900/90 border border-slate-800 rounded-2xl p-5 shadow-2xl space-y-4">
+      <div class="flex items-center justify-between">
         <h2 class="text-base font-bold text-white flex items-center space-x-2">
           <span class="text-sky-400">⚡</span>
-          <span>Realistic Breadboard Wiring Diagram (Fritzing Style)</span>
+          <span>Physical Component Direct Wiring Diagram (No Breadboard)</span>
         </h2>
-        <span class="text-xs text-slate-400 bg-slate-800/80 px-2.5 py-1 rounded-full border border-slate-700">
-          High-Resolution Graphical View
+        <span class="text-xs text-emerald-400 bg-emerald-950/80 border border-emerald-500/30 px-3 py-1 rounded-full font-mono">
+          High-Definition 16:9 Render
         </span>
       </div>
 
-      <div class="rounded-xl overflow-hidden border border-slate-700/80 bg-slate-950 shadow-inner group relative">
+      <div class="rounded-xl overflow-hidden border border-slate-700 bg-white p-2 shadow-inner">
         <img 
-          src="esp32_module1_wiring_1790589280782.jpg" 
-          alt="ESP32-S3 Module 1 Realistic Fritzing Wiring Diagram" 
-          class="w-full h-auto object-contain rounded-lg transition-transform duration-300"
+          src="Module_1_Direct_Wiring_Diagram.jpg" 
+          alt="ESP32-S3 Module 1 Direct Pin-to-Pin Wiring Diagram" 
+          class="w-full h-auto object-contain rounded"
         />
       </div>
 
-      <!-- Color Legend Bar -->
-      <div class="flex flex-wrap items-center justify-center gap-3 mt-4 pt-3 border-t border-slate-800 text-xs">
-        <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-red-950/80 border border-red-500/40 text-red-300 font-medium">
+      <!-- Quick Legend Bar -->
+      <div class="flex flex-wrap items-center justify-center gap-3 pt-2 text-xs font-mono">
+        <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-red-950/80 border border-red-500/40 text-red-300">
           <span class="w-2.5 h-2.5 rounded-full bg-red-500"></span> 5V Power (Red)
         </span>
-        <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-amber-950/80 border border-amber-500/40 text-amber-300 font-medium">
+        <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-amber-950/80 border border-amber-500/40 text-amber-300">
           <span class="w-2.5 h-2.5 rounded-full bg-amber-400"></span> 3.3V Power (Orange)
         </span>
-        <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-900 border border-slate-700 text-slate-300 font-medium">
-          <span class="w-2.5 h-2.5 rounded-full bg-slate-400"></span> GND Ground (Black)
+        <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-slate-900 border border-slate-700 text-slate-300">
+          <span class="w-2.5 h-2.5 rounded-full bg-slate-400"></span> GND (Black)
         </span>
-        <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-blue-950/80 border border-blue-500/40 text-blue-300 font-medium">
-          <span class="w-2.5 h-2.5 rounded-full bg-blue-400"></span> Analog Signal (Blue)
+        <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-emerald-950/80 border border-emerald-500/40 text-emerald-300">
+          <span class="w-2.5 h-2.5 rounded-full bg-emerald-400"></span> DHT11 DATA (GPIO 4 - Green)
         </span>
-        <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-emerald-950/80 border border-emerald-500/40 text-emerald-300 font-medium">
-          <span class="w-2.5 h-2.5 rounded-full bg-emerald-400"></span> Digital / Pulse (Green)
+        <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-blue-950/80 border border-blue-500/40 text-blue-300">
+          <span class="w-2.5 h-2.5 rounded-full bg-blue-400"></span> MQ-137 AO (GPIO 1 - Blue)
         </span>
-        <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-cyan-950/80 border border-cyan-500/40 text-cyan-300 font-medium">
-          <span class="w-2.5 h-2.5 rounded-full bg-cyan-400"></span> I2C SDA/SCL (Yellow/Cyan)
+        <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-yellow-950/80 border border-yellow-500/40 text-yellow-300">
+          <span class="w-2.5 h-2.5 rounded-full bg-yellow-400"></span> Flow Pulse (GPIO 5 - Yellow)
+        </span>
+        <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-teal-950/80 border border-teal-500/40 text-teal-300">
+          <span class="w-2.5 h-2.5 rounded-full bg-teal-400"></span> CCS811 I2C (GPIO 17/16 - Wire1)
+        </span>
+        <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-cyan-950/80 border border-cyan-500/40 text-cyan-300">
+          <span class="w-2.5 h-2.5 rounded-full bg-cyan-400"></span> LCD I2C (GPIO 15/18 - Wire)
         </span>
       </div>
     </div>
 
-    <!-- Verified Netlist Table for PCB CAD Design (EasyEDA / KiCad / Altium) -->
-    <div class="glass-card rounded-2xl p-5 shadow-2xl">
+    <!-- Complete Pin-to-Pin Reference Table -->
+    <div class="bg-slate-900/90 border border-slate-800 rounded-2xl p-5 shadow-2xl">
       <div class="flex items-center justify-between mb-4">
         <div>
           <h2 class="text-base font-bold text-white flex items-center space-x-2">
-            <span class="text-teal-400">📐</span>
-            <span>100% Verified Pin-to-Pin Netlist for PCB Design</span>
+            <span class="text-teal-400">📋</span>
+            <span>Direct Pin-to-Pin Wiring Netlist (EasyEDA / KiCad)</span>
           </h2>
-          <p class="text-xs text-slate-400 mt-0.5">Use this exact netlist to route your schematic in KiCad or EasyEDA</p>
+          <p class="text-xs text-slate-400 mt-0.5">Use this exact list to connect every physical wire/trace directly to the ESP32-S3</p>
         </div>
-        <span class="text-xs text-emerald-400 bg-emerald-950/80 border border-emerald-500/30 px-2.5 py-1 rounded-md font-mono">
-          Tested & Verified Firmware Pinout
-        </span>
       </div>
 
       <div class="overflow-x-auto">
-        <table class="w-full text-left text-xs border-collapse">
+        <table class="w-full text-left text-xs border-collapse font-mono">
           <thead>
-            <tr class="bg-slate-800/90 text-slate-300 border-b border-slate-700">
+            <tr class="bg-slate-800 text-slate-300 border-b border-slate-700">
               <th class="p-3">Component</th>
-              <th class="p-3">Pin Name</th>
-              <th class="p-3">ESP32-S3 Net</th>
-              <th class="p-3">Power Rail</th>
-              <th class="p-3">Recommended Footprint</th>
-              <th class="p-3">PCB Routing & Electrical Rules</th>
+              <th class="p-3">Sensor Pin</th>
+              <th class="p-3">Connect Directly To ESP32-S3 Pin</th>
+              <th class="p-3">Wire Color</th>
+              <th class="p-3">Function / Notes</th>
             </tr>
           </thead>
-          <tbody class="divide-y divide-slate-800/80 font-mono text-slate-300">
+          <tbody class="divide-y divide-slate-800 text-slate-300">
             <!-- DHT11 -->
             <tr class="hover:bg-slate-800/40">
-              <td class="p-3 font-sans font-semibold text-cyan-300">J1: DHT11 Sensor</td>
+              <td class="p-3 font-sans font-bold text-cyan-400" rowspan="3">DHT11 Sensor</td>
               <td class="p-3 font-bold">DATA</td>
-              <td class="p-3"><span class="pin-badge bg-cyan-950 text-cyan-300 border border-cyan-500/50">GPIO 4</span></td>
-              <td class="p-3 text-amber-400 font-bold">3.3V</td>
-              <td class="p-3 font-sans">JST-XH 3-Pin / 2.54mm</td>
-              <td class="p-3 font-sans text-slate-400">Place 4.7kΩ pull-up resistor between DATA and 3.3V on the PCB.</td>
+              <td class="p-3"><span class="pin-badge bg-emerald-950 text-emerald-300 border border-emerald-500/50">GPIO 4</span></td>
+              <td class="p-3 text-emerald-400 font-bold">Green</td>
+              <td class="p-3 font-sans text-slate-400">1-Wire Digital Temperature & Humidity Data</td>
             </tr>
-            <!-- MQ-137 AO -->
             <tr class="hover:bg-slate-800/40">
-              <td class="p-3 font-sans font-semibold text-orange-400" rowspan="2">J2: MQ-137 Gas Sensor</td>
+              <td class="p-3 font-bold">VCC</td>
+              <td class="p-3"><span class="pin-badge bg-amber-950 text-amber-300 border border-amber-500/50">3.3V (3V3)</span></td>
+              <td class="p-3 text-amber-400 font-bold">Orange</td>
+              <td class="p-3 font-sans text-slate-400">3.3V Clean Power</td>
+            </tr>
+            <tr class="hover:bg-slate-800/40">
+              <td class="p-3 font-bold">GND</td>
+              <td class="p-3"><span class="pin-badge bg-slate-800 text-slate-300 border border-slate-600">GND</span></td>
+              <td class="p-3 text-slate-400 font-bold">Black</td>
+              <td class="p-3 font-sans text-slate-400">Ground</td>
+            </tr>
+
+            <!-- MQ-137 -->
+            <tr class="hover:bg-slate-800/40">
+              <td class="p-3 font-sans font-bold text-orange-400" rowspan="4">MQ-137 Gas Sensor</td>
               <td class="p-3 font-bold">AO (Analog)</td>
               <td class="p-3"><span class="pin-badge bg-blue-950 text-blue-300 border border-blue-500/50">GPIO 1 (ADC1_CH0)</span></td>
-              <td class="p-3 text-red-400 font-bold">5.0V (VCC)</td>
-              <td class="p-3 font-sans" rowspan="2">JST-XH 4-Pin / 2.54mm</td>
-              <td class="p-3 font-sans text-slate-400">12-bit ADC input. Clean air baseline reads ~0.0 - 0.4V.</td>
+              <td class="p-3 text-blue-400 font-bold">Blue</td>
+              <td class="p-3 font-sans text-slate-400">Ammonia (NH3) Analog Level (0.0 ppm baseline)</td>
             </tr>
             <tr class="hover:bg-slate-800/40">
-              <td class="p-3">DO (Digital)</td>
+              <td class="p-3 font-bold">DO (Digital)</td>
               <td class="p-3"><span class="pin-badge bg-slate-800 text-slate-300 border border-slate-600">GPIO 2</span></td>
-              <td class="p-3 text-slate-400">3.3V Logic</td>
-              <td class="p-3 font-sans text-slate-400">Digital threshold comparator alert (Active LOW).</td>
+              <td class="p-3 text-slate-300 font-bold">Grey / White</td>
+              <td class="p-3 font-sans text-slate-400">Digital comparator alert output</td>
             </tr>
-            <!-- FS200A Flow -->
             <tr class="hover:bg-slate-800/40">
-              <td class="p-3 font-sans font-semibold text-yellow-400">J3: FS200A Flow Sensor</td>
-              <td class="p-3 font-bold">Pulse (Yellow)</td>
-              <td class="p-3"><span class="pin-badge bg-amber-950 text-amber-300 border border-amber-500/50">GPIO 5</span></td>
-              <td class="p-3 text-red-400 font-bold">5.0V (VCC)</td>
-              <td class="p-3 font-sans">Screw Terminal 3-Pin / JST</td>
-              <td class="p-3 font-sans text-slate-400">Hardware Interrupt on FALLING edge. Add 10kΩ pull-up to 3.3V.</td>
+              <td class="p-3 font-bold">VCC</td>
+              <td class="p-3"><span class="pin-badge bg-red-950 text-red-300 border border-red-500/50">5V (VIN)</span></td>
+              <td class="p-3 text-red-400 font-bold">Red</td>
+              <td class="p-3 font-sans text-slate-400">5V Power for internal heater coil (~160mA)</td>
             </tr>
-            <!-- CCS811 I2C -->
             <tr class="hover:bg-slate-800/40">
-              <td class="p-3 font-sans font-semibold text-purple-400" rowspan="4">J4: CCS811 Air Quality</td>
+              <td class="p-3 font-bold">GND</td>
+              <td class="p-3"><span class="pin-badge bg-slate-800 text-slate-300 border border-slate-600">GND</span></td>
+              <td class="p-3 text-slate-400 font-bold">Black</td>
+              <td class="p-3 font-sans text-slate-400">Ground</td>
+            </tr>
+
+            <!-- FS200A -->
+            <tr class="hover:bg-slate-800/40">
+              <td class="p-3 font-sans font-bold text-yellow-400" rowspan="3">FS200A Flow Sensor</td>
+              <td class="p-3 font-bold">Pulse Output</td>
+              <td class="p-3"><span class="pin-badge bg-yellow-950 text-yellow-300 border border-yellow-500/50">GPIO 5</span></td>
+              <td class="p-3 text-yellow-400 font-bold">Yellow</td>
+              <td class="p-3 font-sans text-slate-400">Hardware Interrupt on FALLING edge</td>
+            </tr>
+            <tr class="hover:bg-slate-800/40">
+              <td class="p-3 font-bold">VCC (Red)</td>
+              <td class="p-3"><span class="pin-badge bg-red-950 text-red-300 border border-red-500/50">5V (VIN)</span></td>
+              <td class="p-3 text-red-400 font-bold">Red</td>
+              <td class="p-3 font-sans text-slate-400">Turbine hall sensor 5V power</td>
+            </tr>
+            <tr class="hover:bg-slate-800/40">
+              <td class="p-3 font-bold">GND (Black)</td>
+              <td class="p-3"><span class="pin-badge bg-slate-800 text-slate-300 border border-slate-600">GND</span></td>
+              <td class="p-3 text-slate-400 font-bold">Black</td>
+              <td class="p-3 font-sans text-slate-400">Ground</td>
+            </tr>
+
+            <!-- CCS811 -->
+            <tr class="hover:bg-slate-800/40">
+              <td class="p-3 font-sans font-bold text-purple-400" rowspan="7">CCS811 Air Quality</td>
               <td class="p-3 font-bold">SDA</td>
-              <td class="p-3"><span class="pin-badge bg-purple-950 text-purple-300 border border-purple-500/50">GPIO 17 (Wire1)</span></td>
-              <td class="p-3 text-amber-400 font-bold">3.3V Only</td>
-              <td class="p-3 font-sans" rowspan="4">2.54mm 7-Pin Header</td>
-              <td class="p-3 font-sans text-slate-400">Dedicated I2C Bus 1 running at 50 kHz clock stretching.</td>
+              <td class="p-3"><span class="pin-badge bg-teal-950 text-teal-300 border border-teal-500/50">GPIO 17 (Wire1)</span></td>
+              <td class="p-3 text-yellow-400 font-bold">Yellow</td>
+              <td class="p-3 font-sans text-slate-400">I2C Data line (Wire1 - 50 kHz)</td>
             </tr>
             <tr class="hover:bg-slate-800/40">
               <td class="p-3 font-bold">SCL</td>
-              <td class="p-3"><span class="pin-badge bg-purple-950 text-purple-300 border border-purple-500/50">GPIO 16 (Wire1)</span></td>
-              <td class="p-3 text-amber-400 font-bold">3.3V Only</td>
-              <td class="p-3 font-sans text-slate-400">Add 4.7kΩ pull-ups to 3.3V if breakout module does not include them.</td>
+              <td class="p-3"><span class="pin-badge bg-teal-950 text-teal-300 border border-teal-500/50">GPIO 16 (Wire1)</span></td>
+              <td class="p-3 text-cyan-400 font-bold">Cyan</td>
+              <td class="p-3 font-sans text-slate-400">I2C Clock line (Wire1 - 50 kHz)</td>
             </tr>
             <tr class="hover:bg-slate-800/40">
               <td class="p-3 font-bold text-rose-400">WAK (Wake)</td>
-              <td class="p-3"><span class="pin-badge bg-slate-800 text-slate-300 border border-slate-600">GND Plane</span></td>
-              <td class="p-3 text-slate-400">—</td>
-              <td class="p-3 font-sans text-rose-300 font-semibold">⚠️ CRITICAL: Active-LOW wake pin! MUST connect to GND.</td>
+              <td class="p-3"><span class="pin-badge bg-slate-800 text-slate-300 border border-slate-600">GND</span></td>
+              <td class="p-3 text-slate-400 font-bold">Black</td>
+              <td class="p-3 font-sans text-rose-300 font-semibold">⚠️ CRITICAL: Active-LOW wake pin! Connect to GND</td>
             </tr>
             <tr class="hover:bg-slate-800/40">
-              <td class="p-3">RST / ADDR</td>
-              <td class="p-3"><span class="pin-badge bg-slate-800 text-slate-300 border border-slate-600">3.3V / GND</span></td>
-              <td class="p-3 text-amber-400">3.3V / GND</td>
-              <td class="p-3 font-sans text-slate-400">RST tied to 3.3V; ADDR to GND (sets fixed I2C address 0x5A).</td>
+              <td class="p-3 font-bold">RST (Reset)</td>
+              <td class="p-3"><span class="pin-badge bg-amber-950 text-amber-300 border border-amber-500/50">3.3V (3V3)</span></td>
+              <td class="p-3 text-amber-400 font-bold">Orange</td>
+              <td class="p-3 font-sans text-slate-400">Active-LOW reset line (pull up to 3.3V)</td>
             </tr>
-            <!-- 2004 LCD Display -->
             <tr class="hover:bg-slate-800/40">
-              <td class="p-3 font-sans font-semibold text-emerald-400" rowspan="2">J5: 2004 I2C LCD</td>
+              <td class="p-3 font-bold">ADD (Addr)</td>
+              <td class="p-3"><span class="pin-badge bg-slate-800 text-slate-300 border border-slate-600">GND</span></td>
+              <td class="p-3 text-slate-400 font-bold">Black</td>
+              <td class="p-3 font-sans text-slate-400">Sets I2C address to 0x5A</td>
+            </tr>
+            <tr class="hover:bg-slate-800/40">
+              <td class="p-3 font-bold">VCC</td>
+              <td class="p-3"><span class="pin-badge bg-amber-950 text-amber-300 border border-amber-500/50">3.3V (3V3)</span></td>
+              <td class="p-3 text-amber-400 font-bold">Orange</td>
+              <td class="p-3 font-sans text-slate-400">⚠️ STRICTLY 3.3V (Do NOT connect to 5V!)</td>
+            </tr>
+            <tr class="hover:bg-slate-800/40">
+              <td class="p-3 font-bold">GND</td>
+              <td class="p-3"><span class="pin-badge bg-slate-800 text-slate-300 border border-slate-600">GND</span></td>
+              <td class="p-3 text-slate-400 font-bold">Black</td>
+              <td class="p-3 font-sans text-slate-400">Ground</td>
+            </tr>
+
+            <!-- LCD 2004 -->
+            <tr class="hover:bg-slate-800/40">
+              <td class="p-3 font-sans font-bold text-emerald-400" rowspan="4">2004 I2C LCD Display</td>
               <td class="p-3 font-bold">SDA</td>
-              <td class="p-3"><span class="pin-badge bg-emerald-950 text-emerald-300 border border-emerald-500/50">GPIO 15 (Wire)</span></td>
-              <td class="p-3 text-red-400 font-bold">5.0V (VCC)</td>
-              <td class="p-3 font-sans" rowspan="2">2.54mm 4-Pin Right-Angle</td>
-              <td class="p-3 font-sans text-slate-400">Primary dedicated hardware I2C bus (`Wire`: Addr 0x27 / 0x3F).</td>
+              <td class="p-3"><span class="pin-badge bg-cyan-950 text-cyan-300 border border-cyan-500/50">GPIO 15 (Wire)</span></td>
+              <td class="p-3 text-yellow-400 font-bold">Yellow</td>
+              <td class="p-3 font-sans text-slate-400">Dedicated I2C Display Data bus</td>
             </tr>
             <tr class="hover:bg-slate-800/40">
               <td class="p-3 font-bold">SCL</td>
-              <td class="p-3"><span class="pin-badge bg-emerald-950 text-emerald-300 border border-emerald-500/50">GPIO 18 (Wire)</span></td>
-              <td class="p-3 text-red-400 font-bold">5.0V (VCC)</td>
-              <td class="p-3 font-sans text-amber-300 font-semibold">⚠️ VCC MUST be 5V! 3.3V results in blank screen / zero contrast.</td>
+              <td class="p-3"><span class="pin-badge bg-cyan-950 text-cyan-300 border border-cyan-500/50">GPIO 18 (Wire)</span></td>
+              <td class="p-3 text-cyan-400 font-bold">Cyan</td>
+              <td class="p-3 font-sans text-slate-400">Dedicated I2C Display Clock bus</td>
+            </tr>
+            <tr class="hover:bg-slate-800/40">
+              <td class="p-3 font-bold">VCC</td>
+              <td class="p-3"><span class="pin-badge bg-red-950 text-red-300 border border-red-500/50">5V (VIN)</span></td>
+              <td class="p-3 text-red-400 font-bold">Red</td>
+              <td class="p-3 font-sans text-slate-400">⚠️ MUST BE 5V (Backpack & LCD contrast need 5V)</td>
+            </tr>
+            <tr class="hover:bg-slate-800/40">
+              <td class="p-3 font-bold">GND</td>
+              <td class="p-3"><span class="pin-badge bg-slate-800 text-slate-300 border border-slate-600">GND</span></td>
+              <td class="p-3 text-slate-400 font-bold">Black</td>
+              <td class="p-3 font-sans text-slate-400">Ground</td>
             </tr>
           </tbody>
         </table>
-      </div>
-    </div>
-
-    <!-- PCB Layout Rules & Trace Width Specs -->
-    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-      <div class="glass-card rounded-2xl p-4 shadow-lg border-l-4 border-amber-500">
-        <h3 class="text-sm font-bold text-amber-400 mb-2">⚡ 1. Trace Widths</h3>
-        <p class="text-xs text-slate-300 leading-relaxed">
-          • <strong class="text-white">5V Power Net:</strong> 30 mil (0.75 mm) to handle MQ-137 heater current (160mA).<br>
-          • <strong class="text-white">3.3V Power Net:</strong> 20 mil (0.5 mm).<br>
-          • <strong class="text-white">Signals / I2C:</strong> 10-12 mil (0.25-0.3 mm).
-        </p>
-      </div>
-
-      <div class="glass-card rounded-2xl p-4 shadow-lg border-l-4 border-cyan-500">
-        <h3 class="text-sm font-bold text-cyan-400 mb-2">🔋 2. Decoupling Capacitors</h3>
-        <p class="text-xs text-slate-300 leading-relaxed">
-          • <strong class="text-white">Bulk Capacitor:</strong> 100µF 16V electrolytic capacitor directly across 5V DC input.<br>
-          • <strong class="text-white">Local Caps:</strong> 0.1µF (100nF) ceramic capacitors right next to CCS811, MQ-137, and LCD headers.
-        </p>
-      </div>
-
-      <div class="glass-card rounded-2xl p-4 shadow-lg border-l-4 border-emerald-500">
-        <h3 class="text-sm font-bold text-emerald-400 mb-2">🛡️ 3. Safe Flashing Isolation</h3>
-        <p class="text-xs text-slate-300 leading-relaxed">
-          • <strong class="text-white">GPIO 19 & 20:</strong> Completely unrouted! Native USB D- and D+ are preserved.<br>
-          • You can plug in the USB cable to flash code or monitor Serial anytime without unplugging sensors.
-        </p>
       </div>
     </div>
 
