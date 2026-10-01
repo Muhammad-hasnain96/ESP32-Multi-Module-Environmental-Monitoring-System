@@ -104,18 +104,21 @@ int selectedTarget = 0;      // 0: Min, 1: Max
 float editingVal = 0.0;
 unsigned long lastMenuActivity = 0;
 
-// Button Debounce
+// Button Debounce & Auto-Repeat
 struct Button {
     int pin;
+    const char* name;
     bool lastState;
     unsigned long lastDebounceTime;
     bool pressed;
+    unsigned long pressStartTime;
+    unsigned long lastRepeatTime;
 };
 
-Button btnMenu = { PIN_BTN_MENU, HIGH, 0, false };
-Button btnUp   = { PIN_BTN_UP,   HIGH, 0, false };
-Button btnDown = { PIN_BTN_DOWN, HIGH, 0, false };
-Button btnBack = { PIN_BTN_BACK, HIGH, 0, false };
+Button btnMenu = { PIN_BTN_MENU, "MENU", HIGH, 0, false, 0, 0 };
+Button btnUp   = { PIN_BTN_UP,   "UP",   HIGH, 0, false, 0, 0 };
+Button btnDown = { PIN_BTN_DOWN, "DOWN", HIGH, 0, false, 0, 0 };
+Button btnBack = { PIN_BTN_BACK, "BACK", HIGH, 0, false, 0, 0 };
 
 // Function Declarations
 void loadRelayConfigs();
@@ -326,11 +329,24 @@ bool checkButton(Button &btn) {
         btn.lastDebounceTime = millis();
     }
 
-    if ((millis() - btn.lastDebounceTime) > 50) {
+    if ((millis() - btn.lastDebounceTime) > 35) {
+        // Initial Press
         if (reading == LOW && !btn.pressed) {
             btn.pressed = true;
+            btn.pressStartTime = millis();
+            btn.lastRepeatTime = millis();
             triggered = true;
-        } else if (reading == HIGH) {
+            Serial.printf("🔘 Button [%s] PRESSED (GPIO %d) -> Menu State: %d\n", btn.name, btn.pin, currentMenu);
+        }
+        // Auto-repeat when held down (after 400ms delay, repeat every 120ms)
+        else if (reading == LOW && btn.pressed) {
+            if ((millis() - btn.pressStartTime > 400) && (millis() - btn.lastRepeatTime > 120)) {
+                btn.lastRepeatTime = millis();
+                triggered = true;
+            }
+        }
+        // Button Released
+        else if (reading == HIGH && btn.pressed) {
             btn.pressed = false;
         }
     }
@@ -347,42 +363,52 @@ void updateButtons() {
 
     if (bMenu || bUp || bDown || bBack) {
         lastMenuActivity = millis();
+    } else {
+        return;
     }
 
     switch (currentMenu) {
         case STATE_HOME:
-            if (bMenu) {
+            if (bMenu || bUp || bDown) {
                 currentMenu = STATE_SELECT_RELAY;
                 selectedRelay = 0;
                 if (lcdAvailable && pLcd != nullptr) pLcd->clear();
+                updateLCD();
             }
             break;
 
         case STATE_SELECT_RELAY:
             if (bUp) {
                 selectedRelay = (selectedRelay + 1) % NUM_RELAYS;
+                updateLCD();
             } else if (bDown) {
                 selectedRelay = (selectedRelay - 1 + NUM_RELAYS) % NUM_RELAYS;
+                updateLCD();
             } else if (bMenu) {
                 currentMenu = STATE_SELECT_TARGET;
                 selectedTarget = 0;
                 if (lcdAvailable && pLcd != nullptr) pLcd->clear();
+                updateLCD();
             } else if (bBack) {
                 currentMenu = STATE_HOME;
                 if (lcdAvailable && pLcd != nullptr) pLcd->clear();
+                updateLCD();
             }
             break;
 
         case STATE_SELECT_TARGET:
             if (bUp || bDown) {
                 selectedTarget = 1 - selectedTarget;
+                updateLCD();
             } else if (bMenu) {
                 currentMenu = STATE_EDIT_VALUE;
                 editingVal = (selectedTarget == 0) ? configs[selectedRelay].minVal : configs[selectedRelay].maxVal;
                 if (lcdAvailable && pLcd != nullptr) pLcd->clear();
+                updateLCD();
             } else if (bBack) {
                 currentMenu = STATE_SELECT_RELAY;
                 if (lcdAvailable && pLcd != nullptr) pLcd->clear();
+                updateLCD();
             }
             break;
 
@@ -390,28 +416,56 @@ void updateButtons() {
             if (bUp) {
                 editingVal += 0.5;
                 if (editingVal > 60.0) editingVal = 60.0;
+                updateLCD();
             } else if (bDown) {
                 editingVal -= 0.5;
                 if (editingVal < 10.0) editingVal = 10.0;
-            } else if (bMenu || bBack) {
+                updateLCD();
+            } else if (bMenu) {
+                // Save new threshold
                 if (selectedTarget == 0) {
                     configs[selectedRelay].minVal = editingVal;
                 } else {
                     configs[selectedRelay].maxVal = editingVal;
                 }
+                // Ensure minVal <= maxVal
+                if (configs[selectedRelay].minVal > configs[selectedRelay].maxVal) {
+                    float t = configs[selectedRelay].minVal;
+                    configs[selectedRelay].minVal = configs[selectedRelay].maxVal;
+                    configs[selectedRelay].maxVal = t;
+                }
                 saveRelayConfig(selectedRelay);
                 readDHTSensor();
                 evaluateSingleRelay(selectedRelay, true);
+                Serial.printf("⚡ LCD Saved Relay %d: Min=%.1fC, Max=%.1fC -> State: %s (%s)\n",
+                    selectedRelay + 1, configs[selectedRelay].minVal, configs[selectedRelay].maxVal,
+                    relayStates[selectedRelay] ? "ON" : "OFF", relayReason[selectedRelay].c_str());
 
                 if (lcdAvailable && pLcd != nullptr) {
                     pLcd->clear();
-                    pLcd->setCursor(4, 1);
+                    pLcd->setCursor(3, 1);
                     pLcd->print("*** SAVED! ***");
-                    delay(600);
+                    pLcd->setCursor(1, 2);
+                    char sb[21];
+                    snprintf(sb, sizeof(sb), "Mn:%4.1fC  Mx:%4.1fC", configs[selectedRelay].minVal, configs[selectedRelay].maxVal);
+                    pLcd->print(sb);
+                    delay(700);
                     pLcd->clear();
                 }
 
                 currentMenu = STATE_SELECT_RELAY;
+                updateLCD();
+            } else if (bBack) {
+                // Cancel without saving
+                if (lcdAvailable && pLcd != nullptr) {
+                    pLcd->clear();
+                    pLcd->setCursor(2, 1);
+                    pLcd->print("** CANCELLED **");
+                    delay(500);
+                    pLcd->clear();
+                }
+                currentMenu = STATE_SELECT_TARGET;
+                updateLCD();
             }
             break;
     }
@@ -495,7 +549,7 @@ void drawSelectTargetScreen() {
     pLcd->print(selectedTarget == 1 ? "> Edit: [ MAX TEMP ]" : "  Edit:   MAX TEMP  ");
 
     pLcd->setCursor(0, 3);
-    pLcd->print("[MENU]Select [BCK]Up");
+    pLcd->print("[MENU]Edit  [BCK]Bck");
 }
 
 void drawEditValueScreen() {
@@ -513,7 +567,7 @@ void drawEditValueScreen() {
     pLcd->print(b2);
 
     pLcd->setCursor(0, 3);
-    pLcd->print("[SAVE] Press Menu/Bk");
+    pLcd->print("[MENU]Save  [BCK]Esc");
 }
 
 // --- SENSOR & AUTO EVALUATION ---
