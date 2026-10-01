@@ -80,3 +80,36 @@ Connect your smartphone to the ESP32 Access Point:
    * `⬛ ALL OFF`: Manual master switch OFF.
 4. **Fast Batch Setup:** Set Min and Max range across all 16 relays simultaneously with 1 tap.
 5. **WiFi Router Manager:** Scan for local Wi-Fi networks and connect the hub to your home router.
+
+---
+
+## 📟 4. 2004 LCD Menu Navigation Guide
+
+### 🏠 Professional Home Screen
+Displays live readings in a clean, uncluttered format:
+```text
+====================
+ TEMP :    32.4 °C 
+ HUMID:    58.2 %  
+[MENU] Main Settings
+```
+Pressing `[MENU]` (or `[UP]`/`[DOWN]`) enters the **Main Menu**.
+
+### 📋 Main Menu (3 Top-Level Options)
+```text
+==== MAIN MENU =====
+> 1. Temperature    
+  2. Humidity       
+  3. Relays (1-16)  
+```
+* **`1. Temperature` (Global All-Relay Setup):**
+  Sets Min and Max temperature thresholds across all 16 relays simultaneously in `Auto Temperature` mode.
+* **`2. Humidity` (Global All-Relay Setup):**
+  Sets Min and Max humidity thresholds across all 16 relays simultaneously in `Auto Humidity` mode.
+* **`3. Relays (1-16)` (Individual Relay Customization):**
+  Scroll through Relays 01 to 16 with `UP`/`DOWN`. Press `[MENU]` to customize that relay:
+  - Toggle Mode: `Auto Temp` $\longleftrightarrow$ `Auto Hum`
+  - Edit Min threshold (with auto-repeat on button hold)
+  - Edit Max threshold (with auto-repeat on button hold)
+  - Press `[MENU]` to **Save** and trigger immediately, or `[BACK]` to **Cancel**.
+
