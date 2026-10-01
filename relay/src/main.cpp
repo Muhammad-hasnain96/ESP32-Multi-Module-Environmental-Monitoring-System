@@ -93,14 +93,25 @@ String sta_status_str = "Disconnected";
 // LCD Menu State Machine
 enum MenuState {
     STATE_HOME = 0,
-    STATE_SELECT_RELAY,
-    STATE_SELECT_TARGET, // Min vs Max
-    STATE_EDIT_VALUE
+    STATE_MAIN_MENU,       // 1. Temp, 2. Hum, 3. Relays
+    STATE_GLOBAL_TARGET,   // Choose Min vs Max for Global Temp or Hum
+    STATE_GLOBAL_EDIT,     // Edit Global Min or Max
+    STATE_SELECT_RELAY,    // Scroll Relays 1-16
+    STATE_RELAY_MENU,      // Mode, Min, Max for selected Relay
+    STATE_EDIT_VALUE       // Edit Min or Max for selected Relay
 };
 
 MenuState currentMenu = STATE_HOME;
-int selectedRelay = 0;       // 0 to 15
-int selectedTarget = 0;      // 0: Min, 1: Max
+int mainMenuIndex = 0;         // 0: Temp, 1: Hum, 2: Relays
+int globalTarget = 0;          // 0: Min, 1: Max
+float globalTempMin = 28.0;
+float globalTempMax = 32.0;
+float globalHumMin = 40.0;
+float globalHumMax = 75.0;
+
+int selectedRelay = 0;         // 0 to 15
+int relayMenuIndex = 0;        // 0: Mode, 1: Min, 2: Max
+int selectedTarget = 0;        // 0: Min, 1: Max
 float editingVal = 0.0;
 unsigned long lastMenuActivity = 0;
 
@@ -132,8 +143,11 @@ void initLCD();
 void updateButtons();
 void updateLCD();
 void drawHomeScreen();
+void drawMainMenuScreen();
+void drawGlobalTargetScreen();
+void drawGlobalEditScreen();
 void drawSelectRelayScreen();
-void drawSelectTargetScreen();
+void drawRelayMenuScreen();
 void drawEditValueScreen();
 
 void handleRoot();
@@ -252,10 +266,11 @@ void loop() {
         updateLCD();
     }
 
-    // Menu Inactivity Timeout (Return to Home after 15s)
-    if (currentMenu != STATE_HOME && millis() - lastMenuActivity > 15000) {
+    // Menu Inactivity Timeout (Return to Home after 20s)
+    if (currentMenu != STATE_HOME && millis() - lastMenuActivity > 20000) {
         currentMenu = STATE_HOME;
         if (lcdAvailable && pLcd != nullptr) pLcd->clear();
+        updateLCD();
     }
 }
 
@@ -370,9 +385,147 @@ void updateButtons() {
     switch (currentMenu) {
         case STATE_HOME:
             if (bMenu || bUp || bDown) {
-                currentMenu = STATE_SELECT_RELAY;
-                selectedRelay = 0;
+                currentMenu = STATE_MAIN_MENU;
+                mainMenuIndex = 0;
                 if (lcdAvailable && pLcd != nullptr) pLcd->clear();
+                updateLCD();
+            }
+            break;
+
+        case STATE_MAIN_MENU:
+            if (bUp) {
+                mainMenuIndex = (mainMenuIndex - 1 + 3) % 3;
+                updateLCD();
+            } else if (bDown) {
+                mainMenuIndex = (mainMenuIndex + 1) % 3;
+                updateLCD();
+            } else if (bBack) {
+                currentMenu = STATE_HOME;
+                if (lcdAvailable && pLcd != nullptr) pLcd->clear();
+                updateLCD();
+            } else if (bMenu) {
+                if (mainMenuIndex == 0 || mainMenuIndex == 1) {
+                    currentMenu = STATE_GLOBAL_TARGET;
+                    globalTarget = 0;
+                } else {
+                    currentMenu = STATE_SELECT_RELAY;
+                    selectedRelay = 0;
+                }
+                if (lcdAvailable && pLcd != nullptr) pLcd->clear();
+                updateLCD();
+            }
+            break;
+
+        case STATE_GLOBAL_TARGET:
+            if (bUp || bDown) {
+                globalTarget = 1 - globalTarget;
+                updateLCD();
+            } else if (bBack) {
+                currentMenu = STATE_MAIN_MENU;
+                if (lcdAvailable && pLcd != nullptr) pLcd->clear();
+                updateLCD();
+            } else if (bMenu) {
+                currentMenu = STATE_GLOBAL_EDIT;
+                if (mainMenuIndex == 0) {
+                    editingVal = (globalTarget == 0) ? globalTempMin : globalTempMax;
+                } else {
+                    editingVal = (globalTarget == 0) ? globalHumMin : globalHumMax;
+                }
+                if (lcdAvailable && pLcd != nullptr) pLcd->clear();
+                updateLCD();
+            }
+            break;
+
+        case STATE_GLOBAL_EDIT:
+            if (bUp) {
+                if (mainMenuIndex == 0) {
+                    editingVal += 0.5;
+                    if (editingVal > 60.0) editingVal = 60.0;
+                } else {
+                    editingVal += 1.0;
+                    if (editingVal > 99.0) editingVal = 99.0;
+                }
+                updateLCD();
+            } else if (bDown) {
+                if (mainMenuIndex == 0) {
+                    editingVal -= 0.5;
+                    if (editingVal < 10.0) editingVal = 10.0;
+                } else {
+                    editingVal -= 1.0;
+                    if (editingVal < 10.0) editingVal = 10.0;
+                }
+                updateLCD();
+            } else if (bBack) {
+                // Cancel without saving
+                if (lcdAvailable && pLcd != nullptr) {
+                    pLcd->clear();
+                    pLcd->setCursor(2, 1);
+                    pLcd->print("** CANCELLED **");
+                    delay(400);
+                    pLcd->clear();
+                }
+                currentMenu = STATE_GLOBAL_TARGET;
+                updateLCD();
+            } else if (bMenu) {
+                // Save to ALL 16 Relays!
+                if (mainMenuIndex == 0) {
+                    // Temperature
+                    if (globalTarget == 0) globalTempMin = editingVal;
+                    else globalTempMax = editingVal;
+
+                    if (globalTempMin > globalTempMax) {
+                        float t = globalTempMin; globalTempMin = globalTempMax; globalTempMax = t;
+                    }
+                    prefRelay.putFloat("gTMin", globalTempMin);
+                    prefRelay.putFloat("gTMax", globalTempMax);
+
+                    for (int i = 0; i < NUM_RELAYS; i++) {
+                        configs[i].mode = 1; // Auto Temp
+                        configs[i].action = 0; // Outside Range ON
+                        configs[i].minVal = globalTempMin;
+                        configs[i].maxVal = globalTempMax;
+                        saveRelayConfig(i);
+                    }
+                    readDHTSensor();
+                    for (int i = 0; i < NUM_RELAYS; i++) {
+                        evaluateSingleRelay(i, true);
+                    }
+                    Serial.printf("⚡ LCD Global Temp Applied to ALL: Min=%.1fC, Max=%.1fC\n", globalTempMin, globalTempMax);
+                } else {
+                    // Humidity
+                    if (globalTarget == 0) globalHumMin = editingVal;
+                    else globalHumMax = editingVal;
+
+                    if (globalHumMin > globalHumMax) {
+                        float t = globalHumMin; globalHumMin = globalHumMax; globalHumMax = t;
+                    }
+                    prefRelay.putFloat("gHMin", globalHumMin);
+                    prefRelay.putFloat("gHMax", globalHumMax);
+
+                    for (int i = 0; i < NUM_RELAYS; i++) {
+                        configs[i].mode = 2; // Auto Hum
+                        configs[i].action = 0; // Outside Range ON
+                        configs[i].minVal = globalHumMin;
+                        configs[i].maxVal = globalHumMax;
+                        saveRelayConfig(i);
+                    }
+                    readDHTSensor();
+                    for (int i = 0; i < NUM_RELAYS; i++) {
+                        evaluateSingleRelay(i, true);
+                    }
+                    Serial.printf("⚡ LCD Global Hum Applied to ALL: Min=%.1f%%, Max=%.1f%%\n", globalHumMin, globalHumMax);
+                }
+
+                if (lcdAvailable && pLcd != nullptr) {
+                    pLcd->clear();
+                    pLcd->setCursor(3, 1);
+                    pLcd->print("*** SAVED! ***");
+                    pLcd->setCursor(1, 2);
+                    pLcd->print("Applied to ALL 16!");
+                    delay(800);
+                    pLcd->clear();
+                }
+                currentMenu = STATE_GLOBAL_TARGET;
                 updateLCD();
             }
             break;
@@ -384,51 +537,101 @@ void updateButtons() {
             } else if (bDown) {
                 selectedRelay = (selectedRelay - 1 + NUM_RELAYS) % NUM_RELAYS;
                 updateLCD();
-            } else if (bMenu) {
-                currentMenu = STATE_SELECT_TARGET;
-                selectedTarget = 0;
+            } else if (bBack) {
+                currentMenu = STATE_MAIN_MENU;
                 if (lcdAvailable && pLcd != nullptr) pLcd->clear();
                 updateLCD();
-            } else if (bBack) {
-                currentMenu = STATE_HOME;
+            } else if (bMenu) {
+                currentMenu = STATE_RELAY_MENU;
+                relayMenuIndex = 0;
                 if (lcdAvailable && pLcd != nullptr) pLcd->clear();
                 updateLCD();
             }
             break;
 
-        case STATE_SELECT_TARGET:
-            if (bUp || bDown) {
-                selectedTarget = 1 - selectedTarget;
+        case STATE_RELAY_MENU:
+            if (bUp) {
+                relayMenuIndex = (relayMenuIndex - 1 + 3) % 3;
                 updateLCD();
-            } else if (bMenu) {
-                currentMenu = STATE_EDIT_VALUE;
-                editingVal = (selectedTarget == 0) ? configs[selectedRelay].minVal : configs[selectedRelay].maxVal;
-                if (lcdAvailable && pLcd != nullptr) pLcd->clear();
+            } else if (bDown) {
+                relayMenuIndex = (relayMenuIndex + 1) % 3;
                 updateLCD();
             } else if (bBack) {
                 currentMenu = STATE_SELECT_RELAY;
                 if (lcdAvailable && pLcd != nullptr) pLcd->clear();
                 updateLCD();
+            } else if (bMenu) {
+                if (relayMenuIndex == 0) {
+                    // Toggle Mode between Auto Temp (1) and Auto Hum (2)
+                    configs[selectedRelay].mode = (configs[selectedRelay].mode == 1) ? 2 : 1;
+                    if (configs[selectedRelay].mode == 2 && configs[selectedRelay].maxVal <= 60.0 && configs[selectedRelay].minVal <= 40.0) {
+                        configs[selectedRelay].minVal = globalHumMin;
+                        configs[selectedRelay].maxVal = globalHumMax;
+                    } else if (configs[selectedRelay].mode == 1 && configs[selectedRelay].maxVal > 60.0) {
+                        configs[selectedRelay].minVal = globalTempMin;
+                        configs[selectedRelay].maxVal = globalTempMax;
+                    }
+                    saveRelayConfig(selectedRelay);
+                    readDHTSensor();
+                    evaluateSingleRelay(selectedRelay, true);
+
+                    if (lcdAvailable && pLcd != nullptr) {
+                        pLcd->clear();
+                        pLcd->setCursor(3, 1);
+                        pLcd->print("Mode Updated!");
+                        pLcd->setCursor(1, 2);
+                        pLcd->print(configs[selectedRelay].mode == 2 ? "-> Auto Humidity" : "-> Auto Temperature");
+                        delay(600);
+                        pLcd->clear();
+                    }
+                    updateLCD();
+                } else {
+                    currentMenu = STATE_EDIT_VALUE;
+                    selectedTarget = (relayMenuIndex == 1) ? 0 : 1;
+                    editingVal = (selectedTarget == 0) ? configs[selectedRelay].minVal : configs[selectedRelay].maxVal;
+                    if (lcdAvailable && pLcd != nullptr) pLcd->clear();
+                    updateLCD();
+                }
             }
             break;
 
         case STATE_EDIT_VALUE:
             if (bUp) {
-                editingVal += 0.5;
-                if (editingVal > 60.0) editingVal = 60.0;
+                if (configs[selectedRelay].mode == 2) {
+                    editingVal += 1.0;
+                    if (editingVal > 99.0) editingVal = 99.0;
+                } else {
+                    editingVal += 0.5;
+                    if (editingVal > 60.0) editingVal = 60.0;
+                }
                 updateLCD();
             } else if (bDown) {
-                editingVal -= 0.5;
-                if (editingVal < 10.0) editingVal = 10.0;
+                if (configs[selectedRelay].mode == 2) {
+                    editingVal -= 1.0;
+                    if (editingVal < 10.0) editingVal = 10.0;
+                } else {
+                    editingVal -= 0.5;
+                    if (editingVal < 10.0) editingVal = 10.0;
+                }
+                updateLCD();
+            } else if (bBack) {
+                // Cancel without saving
+                if (lcdAvailable && pLcd != nullptr) {
+                    pLcd->clear();
+                    pLcd->setCursor(2, 1);
+                    pLcd->print("** CANCELLED **");
+                    delay(400);
+                    pLcd->clear();
+                }
+                currentMenu = STATE_RELAY_MENU;
                 updateLCD();
             } else if (bMenu) {
-                // Save new threshold
+                // Save for selected relay
                 if (selectedTarget == 0) {
                     configs[selectedRelay].minVal = editingVal;
                 } else {
                     configs[selectedRelay].maxVal = editingVal;
                 }
-                // Ensure minVal <= maxVal
                 if (configs[selectedRelay].minVal > configs[selectedRelay].maxVal) {
                     float t = configs[selectedRelay].minVal;
                     configs[selectedRelay].minVal = configs[selectedRelay].maxVal;
@@ -437,8 +640,8 @@ void updateButtons() {
                 saveRelayConfig(selectedRelay);
                 readDHTSensor();
                 evaluateSingleRelay(selectedRelay, true);
-                Serial.printf("⚡ LCD Saved Relay %d: Min=%.1fC, Max=%.1fC -> State: %s (%s)\n",
-                    selectedRelay + 1, configs[selectedRelay].minVal, configs[selectedRelay].maxVal,
+                Serial.printf("⚡ LCD Saved Relay %d: Mode=%d, Min=%.1f, Max=%.1f -> State: %s (%s)\n",
+                    selectedRelay + 1, configs[selectedRelay].mode, configs[selectedRelay].minVal, configs[selectedRelay].maxVal,
                     relayStates[selectedRelay] ? "ON" : "OFF", relayReason[selectedRelay].c_str());
 
                 if (lcdAvailable && pLcd != nullptr) {
@@ -447,24 +650,13 @@ void updateButtons() {
                     pLcd->print("*** SAVED! ***");
                     pLcd->setCursor(1, 2);
                     char sb[21];
-                    snprintf(sb, sizeof(sb), "Mn:%4.1fC  Mx:%4.1fC", configs[selectedRelay].minVal, configs[selectedRelay].maxVal);
+                    char u = (configs[selectedRelay].mode == 2) ? '%' : 'C';
+                    snprintf(sb, sizeof(sb), "Mn:%4.1f%c  Mx:%4.1f%c", configs[selectedRelay].minVal, u, configs[selectedRelay].maxVal, u);
                     pLcd->print(sb);
                     delay(700);
                     pLcd->clear();
                 }
-
-                currentMenu = STATE_SELECT_RELAY;
-                updateLCD();
-            } else if (bBack) {
-                // Cancel without saving
-                if (lcdAvailable && pLcd != nullptr) {
-                    pLcd->clear();
-                    pLcd->setCursor(2, 1);
-                    pLcd->print("** CANCELLED **");
-                    delay(500);
-                    pLcd->clear();
-                }
-                currentMenu = STATE_SELECT_TARGET;
+                currentMenu = STATE_RELAY_MENU;
                 updateLCD();
             }
             break;
@@ -478,44 +670,103 @@ void updateLCD() {
 
     switch (currentMenu) {
         case STATE_HOME:          drawHomeScreen(); break;
+        case STATE_MAIN_MENU:     drawMainMenuScreen(); break;
+        case STATE_GLOBAL_TARGET: drawGlobalTargetScreen(); break;
+        case STATE_GLOBAL_EDIT:   drawGlobalEditScreen(); break;
         case STATE_SELECT_RELAY:  drawSelectRelayScreen(); break;
-        case STATE_SELECT_TARGET: drawSelectTargetScreen(); break;
+        case STATE_RELAY_MENU:    drawRelayMenuScreen(); break;
         case STATE_EDIT_VALUE:    drawEditValueScreen(); break;
     }
 }
 
 void drawHomeScreen() {
     pLcd->setCursor(0, 0);
-    if (sensorValid) {
-        char buf[21];
-        snprintf(buf, sizeof(buf), "T:%4.1fC   H:%4.1f%% ", currentTemp, currentHum);
-        pLcd->print(buf);
-    } else {
-        pLcd->print("DHT11: Reading...   ");
-    }
+    pLcd->print("====================");
 
     pLcd->setCursor(0, 1);
-    if (WiFi.status() == WL_CONNECTED) {
+    if (sensorValid) {
         char buf[21];
-        snprintf(buf, sizeof(buf), "IP: %-16s", WiFi.localIP().toString().c_str());
+        snprintf(buf, sizeof(buf), " TEMP :    %4.1f %cC ", currentTemp, 223);
         pLcd->print(buf);
     } else {
-        pLcd->print("AP: 192.168.4.1     ");
+        pLcd->print(" TEMP :   --.- \xDF" "C ");
     }
 
     pLcd->setCursor(0, 2);
-    char l2[21] = "R01-08: [        ]  ";
-    for (int i = 0; i < 8; i++) {
-        l2[9 + i] = relayStates[i] ? '*' : '.';
+    if (sensorValid) {
+        char buf[21];
+        snprintf(buf, sizeof(buf), " HUMID:    %4.1f %%  ", currentHum);
+        pLcd->print(buf);
+    } else {
+        pLcd->print(" HUMID:   --.- %   ");
     }
-    pLcd->print(l2);
 
     pLcd->setCursor(0, 3);
-    char l3[21] = "R09-16: [        ]  ";
-    for (int i = 0; i < 8; i++) {
-        l3[9 + i] = relayStates[8 + i] ? '*' : '.';
+    pLcd->print("[MENU] Main Settings");
+}
+
+void drawMainMenuScreen() {
+    pLcd->setCursor(0, 0);
+    pLcd->print("==== MAIN MENU =====");
+
+    pLcd->setCursor(0, 1);
+    pLcd->print(mainMenuIndex == 0 ? "> 1. Temperature    " : "  1. Temperature    ");
+
+    pLcd->setCursor(0, 2);
+    pLcd->print(mainMenuIndex == 1 ? "> 2. Humidity       " : "  2. Humidity       ");
+
+    pLcd->setCursor(0, 3);
+    pLcd->print(mainMenuIndex == 2 ? "> 3. Relays (1-16)  " : "  3. Relays (1-16)  ");
+}
+
+void drawGlobalTargetScreen() {
+    pLcd->setCursor(0, 0);
+    if (mainMenuIndex == 0) {
+        pLcd->print("= GLOBAL TEMP (ALL)=");
+    } else {
+        pLcd->print("= GLOBAL HUM  (ALL)=");
     }
-    pLcd->print(l3);
+
+    char b1[21], b2[21];
+    if (mainMenuIndex == 0) {
+        snprintf(b1, sizeof(b1), "%s 1. Min: %4.1f%cC   ", globalTarget == 0 ? ">" : " ", globalTempMin, 223);
+        snprintf(b2, sizeof(b2), "%s 2. Max: %4.1f%cC   ", globalTarget == 1 ? ">" : " ", globalTempMax, 223);
+    } else {
+        snprintf(b1, sizeof(b1), "%s 1. Min: %4.1f%%    ", globalTarget == 0 ? ">" : " ", globalHumMin);
+        snprintf(b2, sizeof(b2), "%s 2. Max: %4.1f%%    ", globalTarget == 1 ? ">" : " ", globalHumMax);
+    }
+
+    pLcd->setCursor(0, 1);
+    pLcd->print(b1);
+    pLcd->setCursor(0, 2);
+    pLcd->print(b2);
+
+    pLcd->setCursor(0, 3);
+    pLcd->print("[MENU]Edit  [BCK]Bck");
+}
+
+void drawGlobalEditScreen() {
+    pLcd->setCursor(0, 0);
+    if (mainMenuIndex == 0) {
+        pLcd->print(globalTarget == 0 ? "ALL RELAYS: MIN TEMP" : "ALL RELAYS: MAX TEMP");
+    } else {
+        pLcd->print(globalTarget == 0 ? "ALL RELAYS: MIN HUM " : "ALL RELAYS: MAX HUM ");
+    }
+
+    pLcd->setCursor(0, 1);
+    pLcd->print("Press UP/DN to set: ");
+
+    pLcd->setCursor(0, 2);
+    char b2[21];
+    if (mainMenuIndex == 0) {
+        snprintf(b2, sizeof(b2), " >>> [ %4.1f %cC ] <<<", editingVal, 223);
+    } else {
+        snprintf(b2, sizeof(b2), " >>> [ %4.1f %%  ] <<<", editingVal);
+    }
+    pLcd->print(b2);
+
+    pLcd->setCursor(0, 3);
+    pLcd->print("[MENU]Apply [BCK]Esc");
 }
 
 void drawSelectRelayScreen() {
@@ -529,33 +780,45 @@ void drawSelectRelayScreen() {
 
     pLcd->setCursor(0, 2);
     char buf2[21];
-    snprintf(buf2, sizeof(buf2), "Mn:%4.1fC  Mx:%4.1fC  ", configs[selectedRelay].minVal, configs[selectedRelay].maxVal);
+    if (configs[selectedRelay].mode == 2) {
+        snprintf(buf2, sizeof(buf2), "[HUM ] Mn:%2.0f%% Mx:%2.0f%% ", configs[selectedRelay].minVal, configs[selectedRelay].maxVal);
+    } else {
+        snprintf(buf2, sizeof(buf2), "[TEMP] Mn:%4.1f Mx:%4.1f", configs[selectedRelay].minVal, configs[selectedRelay].maxVal);
+    }
     pLcd->print(buf2);
 
     pLcd->setCursor(0, 3);
-    pLcd->print("[MENU]Edit  [BCK]Ext");
+    pLcd->print("[MENU]Conf  [BCK]Bck");
 }
 
-void drawSelectTargetScreen() {
+void drawRelayMenuScreen() {
     pLcd->setCursor(0, 0);
     char b0[21];
-    snprintf(b0, sizeof(b0), "CONFIG RELAY %02d     ", selectedRelay + 1);
+    snprintf(b0, sizeof(b0), "-- RELAY %02d SETUP --", selectedRelay + 1);
     pLcd->print(b0);
 
     pLcd->setCursor(0, 1);
-    pLcd->print(selectedTarget == 0 ? "> Edit: [ MIN TEMP ]" : "  Edit:   MIN TEMP  ");
+    char b1[21];
+    snprintf(b1, sizeof(b1), "%s 1.Mode:%s", relayMenuIndex == 0 ? ">" : " ", configs[selectedRelay].mode == 2 ? "Auto Hum " : "Auto Temp");
+    pLcd->print(b1);
 
+    char u = (configs[selectedRelay].mode == 2) ? '%' : 'C';
     pLcd->setCursor(0, 2);
-    pLcd->print(selectedTarget == 1 ? "> Edit: [ MAX TEMP ]" : "  Edit:   MAX TEMP  ");
+    char b2[21];
+    snprintf(b2, sizeof(b2), "%s 2.Min : %4.1f %c    ", relayMenuIndex == 1 ? ">" : " ", configs[selectedRelay].minVal, u);
+    pLcd->print(b2);
 
     pLcd->setCursor(0, 3);
-    pLcd->print("[MENU]Edit  [BCK]Bck");
+    char b3[21];
+    snprintf(b3, sizeof(b3), "%s 3.Max : %4.1f %c    ", relayMenuIndex == 2 ? ">" : " ", configs[selectedRelay].maxVal, u);
+    pLcd->print(b3);
 }
 
 void drawEditValueScreen() {
     pLcd->setCursor(0, 0);
     char b0[21];
-    snprintf(b0, sizeof(b0), "RELAY %02d: %s", selectedRelay + 1, selectedTarget == 0 ? "MIN VAL " : "MAX VAL ");
+    const char* typeName = (configs[selectedRelay].mode == 2) ? "HUM " : "TEMP";
+    snprintf(b0, sizeof(b0), "RELAY %02d: %s %s", selectedRelay + 1, selectedTarget == 0 ? "MIN" : "MAX", typeName);
     pLcd->print(b0);
 
     pLcd->setCursor(0, 1);
@@ -563,7 +826,11 @@ void drawEditValueScreen() {
 
     pLcd->setCursor(0, 2);
     char b2[21];
-    snprintf(b2, sizeof(b2), " >>> [ %4.1f %cC ] <<<", editingVal, 223);
+    if (configs[selectedRelay].mode == 2) {
+        snprintf(b2, sizeof(b2), " >>> [ %4.1f %%  ] <<<", editingVal);
+    } else {
+        snprintf(b2, sizeof(b2), " >>> [ %4.1f %cC ] <<<", editingVal, 223);
+    }
     pLcd->print(b2);
 
     pLcd->setCursor(0, 3);
@@ -693,6 +960,11 @@ void handleAllAuto() {
 
 void loadRelayConfigs() {
     prefRelay.begin("r16-cfg", false);
+
+    globalTempMin = prefRelay.getFloat("gTMin", 28.0f);
+    globalTempMax = prefRelay.getFloat("gTMax", 32.0f);
+    globalHumMin  = prefRelay.getFloat("gHMin", 40.0f);
+    globalHumMax  = prefRelay.getFloat("gHMax", 75.0f);
 
     float defaultMins[16] = {
         26.5, 26.8, 27.2, 27.5, 27.8, 28.2, 28.5, 28.8,
