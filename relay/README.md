@@ -34,12 +34,16 @@ A comprehensive, production-grade 16-channel automation hub powered by the **ESP
 | **VCC** | **`5V` (VIN)** | 5V rail for crisp character contrast |
 | **GND** | **`GND`** | Common Ground |
 
-### 🌡️ DHT11 Temperature & Humidity Sensor
-| DHT11 Pin | ESP32-S3 Pin | Notes |
-|---|---|---|
-| **DATA** | **`GPIO 8`** | Single-wire digital data pin |
-| **VCC** | **`3.3V` / `5V`** | Clean power |
-| **GND** | **`GND`** | Common Ground |
+### 🌡️ 3x DHT11 Temperature & Humidity Sensors
+| Sensor | Data Pin | ESP32-S3 Pin | Notes |
+|---|---|---|---|
+| **DHT11 #1 (T1)** | `DATA` | **`GPIO 8`** | Primary Sensor |
+| **DHT11 #2 (T2)** | `DATA` | **`GPIO 3`** | Multi-Zone Sensor 2 |
+| **DHT11 #3 (T3)** | `DATA` | **`GPIO 42`** | Multi-Zone Sensor 3 |
+| **Power** | `VCC` / `GND` | **`3.3V / 5V` & `GND`** | Common Ground & Clean Power |
+
+> [!NOTE]
+> Relay ON/OFF decisions are calculated dynamically based on the **Average (Mean)** of all active connected sensors. If any sensor is unplugged, the system smoothly falls back to the remaining active sensors.
 
 ### 🔘 4 Physical Navigation Buttons (Internal Pullup)
 | Button | ESP32-S3 Pin | Function |
@@ -51,12 +55,12 @@ A comprehensive, production-grade 16-channel automation hub powered by the **ESP
 
 ---
 
-## ⚡ Automation Logic: Outside Range ON
+## ⚡ Automation Logic: Outside Range ON (Based on Average)
 
-The relays follow the dual-threshold window logic:
-* **Relay turns ON** when $\text{Temperature} \ge \text{Max Threshold}$ *(Too Hot / Cooling)*
-* **Relay turns ON** when $\text{Temperature} \le \text{Min Threshold}$ *(Too Cold / Heating)*
-* **Relay automatically turns OFF** when $\text{Min Threshold} < \text{Temperature} < \text{Max Threshold}$ *(Normal / Safe Zone)*
+The relays follow the dual-threshold window logic evaluated against the **Average Temperature / Humidity**:
+* **Relay turns ON** when $\text{Average} \ge \text{Max Threshold}$ *(Too Hot / Cooling)*
+* **Relay turns ON** when $\text{Average} \le \text{Min Threshold}$ *(Too Cold / Heating)*
+* **Relay automatically turns OFF** when $\text{Min Threshold} < \text{Average} < \text{Max Threshold}$ *(Normal / Safe Zone)*
 
 ---
 
@@ -67,7 +71,7 @@ Connect your smartphone to the ESP32 Access Point:
 * **IP Address:** `192.168.4.1`
 
 ### Dashboard Features:
-1. **Live Sensor Cards:** Displays real-time Temperature (°C) and Humidity (%).
+1. **Live Sensor Cards:** Displays real-time Average Temperature & Humidity with individual T1, T2, T3 breakdown.
 2. **Individual Relay Control:**
    * Live status badge (`ON` / `OFF`) with reason text.
    * Threshold configuration inputs for Min and Max values.
@@ -86,11 +90,11 @@ Connect your smartphone to the ESP32 Access Point:
 ## 📟 4. 2004 LCD Menu Navigation Guide
 
 ### 🏠 Professional Home Screen
-Displays live readings in a clean, uncluttered format:
+Displays individual sensors (T1, T2, T3) and live Average temperature:
 ```text
 ====================
- TEMP :    32.4 °C 
- HUMID:    58.2 %  
+ 23, 21, 25, Avg. 23
+ HUMID:    58.2 %   
 [MENU] Main Settings
 ```
 Pressing `[MENU]` (or `[UP]`/`[DOWN]`) enters the **Main Menu**.
@@ -98,12 +102,12 @@ Pressing `[MENU]` (or `[UP]`/`[DOWN]`) enters the **Main Menu**.
 ### 📋 Main Menu (3 Top-Level Options)
 ```text
 ==== MAIN MENU =====
-> 1. Temperature    
+>23, 21, 25, Avg. 23
   2. Humidity       
   3. Relays (1-16)  
 ```
-* **`1. Temperature` (Global All-Relay Setup):**
-  Sets Min and Max temperature thresholds across all 16 relays simultaneously in `Auto Temperature` mode.
+* **`> 23, 21, 25, Avg. 23` (Temperature / Global All-Relay Setup):**
+  Shows live T1, T2, T3 and Average. Pressing `[MENU]` sets Min and Max temperature thresholds across all 16 relays simultaneously.
 * **`2. Humidity` (Global All-Relay Setup):**
   Sets Min and Max humidity thresholds across all 16 relays simultaneously in `Auto Humidity` mode.
 * **`3. Relays (1-16)` (Individual Relay Customization):**

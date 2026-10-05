@@ -9,7 +9,10 @@
  * - Module 1 (8-ch Relay): GPIO 4, 5, 6, 7, 15, 16, 21, 47
  * - Module 2 (4-ch Relay): GPIO 1, 2, 9, 10
  * - Module 3 (4-ch Relay): GPIO 11, 12, 13, 14
- * - DHT11 Sensor:          GPIO 8
+ * - DHT11 Sensors (x3 Multi-Zone / Average):
+ *   Sensor 1 (T1): GPIO 8
+ *   Sensor 2 (T2): GPIO 3
+ *   Sensor 3 (T3): GPIO 42
  * - 2004 I2C LCD Display:
  *   SDA -> GPIO 17
  *   SCL -> GPIO 18
@@ -40,9 +43,15 @@ const int RELAY_PINS[NUM_RELAYS] = {
     11, 12, 13, 14                 // Module 3 (Relays 13-16)
 };
 
-#define DHTPIN 8
+// 3x DHT11 Sensors (T1 on GPIO 8, T2 on GPIO 3, T3 on GPIO 42)
+#define DHTPIN1 8
+#define DHTPIN2 3
+#define DHTPIN3 42
 #define DHTTYPE DHT11
-DHT dht(DHTPIN, DHTTYPE);
+
+DHT dht1(DHTPIN1, DHTTYPE);
+DHT dht2(DHTPIN2, DHTTYPE);
+DHT dht3(DHTPIN3, DHTTYPE);
 
 // I2C LCD Pins (Proven Default I2C Pins: SDA=17, SCL=18)
 #define I2C_SDA 17
@@ -75,9 +84,14 @@ RelayConfig configs[NUM_RELAYS];
 bool relayStates[NUM_RELAYS] = { false };
 String relayReason[NUM_RELAYS];
 
-// Sensor readings
-float currentTemp = 0.0;
-float currentHum = 0.0;
+// Sensor readings (3x DHT11 & Averages)
+float temp1 = 0.0, temp2 = 0.0, temp3 = 0.0;
+float hum1  = 0.0, hum2  = 0.0, hum3  = 0.0;
+bool valid1 = false, valid2 = false, valid3 = false;
+float avgTemp = 0.0;
+float avgHum  = 0.0;
+float currentTemp = 0.0; // Relay decisions are made on currentTemp = avgTemp
+float currentHum  = 0.0; // Relay decisions are made on currentHum = avgHum
 bool sensorValid = false;
 
 // Network & Web
@@ -182,8 +196,10 @@ void setup() {
     // Initialize I2C & LCD with Auto Scanner
     initLCD();
 
-    // Start DHT11
-    dht.begin();
+    // Start 3x DHT11 Sensors (GPIO 8, 3, 42)
+    dht1.begin();
+    dht2.begin();
+    dht3.begin();
 
     // Load Relay Thresholds
     loadRelayConfigs();
@@ -685,17 +701,22 @@ void drawHomeScreen() {
 
     pLcd->setCursor(0, 1);
     if (sensorValid) {
+        char s1[4], s2[4], s3[4], sAvg[4];
+        if (valid1) snprintf(s1, sizeof(s1), "%2.0f", temp1); else strcpy(s1, "--");
+        if (valid2) snprintf(s2, sizeof(s2), "%2.0f", temp2); else strcpy(s2, "--");
+        if (valid3) snprintf(s3, sizeof(s3), "%2.0f", temp3); else strcpy(s3, "--");
+        snprintf(sAvg, sizeof(sAvg), "%2.0f", avgTemp);
         char buf[21];
-        snprintf(buf, sizeof(buf), " TEMP :    %4.1f %cC ", currentTemp, 223);
+        snprintf(buf, sizeof(buf), " %s, %s, %s, Avg. %s", s1, s2, s3, sAvg);
         pLcd->print(buf);
     } else {
-        pLcd->print(" TEMP :   --.- \xDF" "C ");
+        pLcd->print(" --, --, --, Avg. --");
     }
 
     pLcd->setCursor(0, 2);
     if (sensorValid) {
         char buf[21];
-        snprintf(buf, sizeof(buf), " HUMID:    %4.1f %%  ", currentHum);
+        snprintf(buf, sizeof(buf), " HUMID:    %4.1f %%  ", avgHum);
         pLcd->print(buf);
     } else {
         pLcd->print(" HUMID:   --.- %   ");
@@ -709,8 +730,17 @@ void drawMainMenuScreen() {
     pLcd->setCursor(0, 0);
     pLcd->print("==== MAIN MENU =====");
 
+    char s1[4], s2[4], s3[4], sAvg[4];
+    if (valid1) snprintf(s1, sizeof(s1), "%2.0f", temp1); else strcpy(s1, "--");
+    if (valid2) snprintf(s2, sizeof(s2), "%2.0f", temp2); else strcpy(s2, "--");
+    if (valid3) snprintf(s3, sizeof(s3), "%2.0f", temp3); else strcpy(s3, "--");
+    if (sensorValid) snprintf(sAvg, sizeof(sAvg), "%2.0f", avgTemp); else strcpy(sAvg, "--");
+
+    char b1[21];
+    snprintf(b1, sizeof(b1), "%s%s, %s, %s, Avg. %s", mainMenuIndex == 0 ? ">" : " ", s1, s2, s3, sAvg);
+
     pLcd->setCursor(0, 1);
-    pLcd->print(mainMenuIndex == 0 ? "> 1. Temperature    " : "  1. Temperature    ");
+    pLcd->print(b1);
 
     pLcd->setCursor(0, 2);
     pLcd->print(mainMenuIndex == 1 ? "> 2. Humidity       " : "  2. Humidity       ");
@@ -840,16 +870,48 @@ void drawEditValueScreen() {
 // --- SENSOR & AUTO EVALUATION ---
 
 void readDHTSensor() {
-    float t = dht.readTemperature();
-    float h = dht.readHumidity();
+    float t1 = dht1.readTemperature();
+    float h1 = dht1.readHumidity();
+    float t2 = dht2.readTemperature();
+    float h2 = dht2.readHumidity();
+    float t3 = dht3.readTemperature();
+    float h3 = dht3.readHumidity();
 
-    if (isnan(t) || isnan(h)) {
+    valid1 = !isnan(t1) && !isnan(h1) && t1 > -20.0 && t1 < 80.0;
+    valid2 = !isnan(t2) && !isnan(h2) && t2 > -20.0 && t2 < 80.0;
+    valid3 = !isnan(t3) && !isnan(h3) && t3 > -20.0 && t3 < 80.0;
+
+    if (valid1) { temp1 = t1; hum1 = h1; }
+    if (valid2) { temp2 = t2; hum2 = h2; }
+    if (valid3) { temp3 = t3; hum3 = h3; }
+
+    float sumT = 0.0;
+    float sumH = 0.0;
+    int count = 0;
+
+    if (valid1) { sumT += temp1; sumH += hum1; count++; }
+    if (valid2) { sumT += temp2; sumH += hum2; count++; }
+    if (valid3) { sumT += temp3; sumH += hum3; count++; }
+
+    if (count > 0) {
+        avgTemp = sumT / count;
+        avgHum = sumH / count;
+        currentTemp = avgTemp; // Relay decisions are made on average value
+        currentHum = avgHum;
+        sensorValid = true;
+    } else {
         sensorValid = false;
-        return;
     }
-    currentTemp = t;
-    currentHum = h;
-    sensorValid = true;
+
+    static unsigned long lastLog = 0;
+    if (millis() - lastLog > 4000) {
+        lastLog = millis();
+        Serial.printf("🌡️ DHT11s -> T1:%s(%.1fC) | T2:%s(%.1fC) | T3:%s(%.1fC) => AVG: %.1fC, %.1f%%\n",
+            valid1 ? "OK" : "NC", temp1,
+            valid2 ? "OK" : "NC", temp2,
+            valid3 ? "OK" : "NC", temp3,
+            avgTemp, avgHum);
+    }
 }
 
 void evaluateSingleRelay(int i, bool isConfigUpdate) {
@@ -1088,7 +1150,13 @@ void handleBatchRange() {
 void handleGetStatus() {
     String json = "{";
     json += "\"temp\":" + String(sensorValid ? String(currentTemp, 1) : "\"--\"") + ",";
+    json += "\"temp1\":" + String(valid1 ? String(temp1, 1) : "\"--\"") + ",";
+    json += "\"temp2\":" + String(valid2 ? String(temp2, 1) : "\"--\"") + ",";
+    json += "\"temp3\":" + String(valid3 ? String(temp3, 1) : "\"--\"") + ",";
     json += "\"hum\":" + String(sensorValid ? String(currentHum, 1) : "\"--\"") + ",";
+    json += "\"hum1\":" + String(valid1 ? String(hum1, 1) : "\"--\"") + ",";
+    json += "\"hum2\":" + String(valid2 ? String(hum2, 1) : "\"--\"") + ",";
+    json += "\"hum3\":" + String(valid3 ? String(hum3, 1) : "\"--\"") + ",";
     json += "\"sensorOk\":" + String(sensorValid ? "true" : "false") + ",";
     json += "\"lcdStatus\":\"" + lcdStatusStr + "\",";
 
@@ -1257,14 +1325,14 @@ void handleRoot() {
 
         <div class="hero-grid">
             <div class="sensor-card">
-                <div class="sensor-label">🌡️ Temperature</div>
+                <div class="sensor-label">🌡️ Avg Temperature</div>
                 <div class="sensor-val" id="tempVal" style="color:#38bdf8;">--.- °C</div>
-                <span id="tempStatus" style="font-size:0.75rem; color:var(--text-dim);">Reading...</span>
+                <span id="tempStatus" style="font-size:0.75rem; color:var(--text-dim);">T1: -- | T2: -- | T3: --</span>
             </div>
             <div class="sensor-card">
-                <div class="sensor-label">💧 Humidity</div>
+                <div class="sensor-label">💧 Avg Humidity</div>
                 <div class="sensor-val" id="humVal" style="color:#06b6d4;">--.- %</div>
-                <span id="humStatus" style="font-size:0.75rem; color:var(--text-dim);">Reading...</span>
+                <span id="humStatus" style="font-size:0.75rem; color:var(--text-dim);">H1: -- | H2: -- | H3: --</span>
             </div>
         </div>
 
@@ -1407,13 +1475,13 @@ void handleRoot() {
                 liveSensorTemp = parseFloat(d.temp);
                 document.getElementById('tempVal').innerText = d.temp + ' °C';
                 document.getElementById('humVal').innerText = d.hum + ' %';
-                document.getElementById('tempStatus').innerText = 'Live Reading';
-                document.getElementById('humStatus').innerText = 'Live Reading';
+                document.getElementById('tempStatus').innerText = `T1: ${d.temp1}° | T2: ${d.temp2}° | T3: ${d.temp3}° (Avg: ${d.temp}°)`;
+                document.getElementById('humStatus').innerText = `H1: ${d.hum1}% | H2: ${d.hum2}% | H3: ${d.hum3}% (Avg: ${d.hum}%)`;
             } else {
                 document.getElementById('tempVal').innerText = '--.- °C';
                 document.getElementById('humVal').innerText = '--.- %';
-                document.getElementById('tempStatus').innerText = 'Sensor error on GPIO 8';
-                document.getElementById('humStatus').innerText = 'Sensor error on GPIO 8';
+                document.getElementById('tempStatus').innerText = 'Sensor error (Check GPIO 8, 3, 42)';
+                document.getElementById('humStatus').innerText = 'Sensor error (Check GPIO 8, 3, 42)';
             }
 
             if(d.lcdStatus) {
