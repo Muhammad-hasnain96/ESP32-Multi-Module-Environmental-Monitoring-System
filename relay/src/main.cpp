@@ -919,7 +919,7 @@ void evaluateSingleRelay(int i, bool isConfigUpdate) {
 
     float val = (configs[i].mode == 1) ? currentTemp : currentHum;
     String valUnit = (configs[i].mode == 1) ? "°C" : "%";
-    String typeName = (configs[i].mode == 1) ? "Temp" : "Hum";
+    String typeName = (configs[i].mode == 1) ? "Avg Temp" : "Avg Hum";
 
     float minVal = configs[i].minVal;
     float maxVal = configs[i].maxVal;
@@ -941,7 +941,7 @@ void evaluateSingleRelay(int i, bool isConfigUpdate) {
             reason = "Auto ON: " + typeName + " " + String(val, 1) + valUnit + " <= Min " + String(minVal, 1) + valUnit;
         } else {
             shouldBeOn = false;
-            reason = "Auto OFF: In Safe Range (" + String(minVal, 1) + " - " + String(maxVal, 1) + valUnit + ")";
+            reason = "Auto OFF: In Safe Range (" + String(minVal, 1) + " - " + String(maxVal, 1) + valUnit + ") [Avg: " + String(val, 1) + valUnit + "]";
         }
     }
     else if (configs[i].action == 1) { // Inside Range ON
