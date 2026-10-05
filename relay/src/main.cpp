@@ -707,19 +707,24 @@ void drawHomeScreen() {
         if (valid3) snprintf(s3, sizeof(s3), "%2.0f", temp3); else strcpy(s3, "--");
         snprintf(sAvg, sizeof(sAvg), "%2.0f", avgTemp);
         char buf[21];
-        snprintf(buf, sizeof(buf), " %s, %s, %s, Avg. %s", s1, s2, s3, sAvg);
+        snprintf(buf, sizeof(buf), "T: %s, %s, %s Avg.%s", s1, s2, s3, sAvg);
         pLcd->print(buf);
     } else {
-        pLcd->print(" --, --, --, Avg. --");
+        pLcd->print("T: --, --, -- Avg.--");
     }
 
     pLcd->setCursor(0, 2);
     if (sensorValid) {
+        char h1s[4], h2s[4], h3s[4], hAvgs[4];
+        if (valid1) snprintf(h1s, sizeof(h1s), "%2.0f", hum1); else strcpy(h1s, "--");
+        if (valid2) snprintf(h2s, sizeof(h2s), "%2.0f", hum2); else strcpy(h2s, "--");
+        if (valid3) snprintf(h3s, sizeof(h3s), "%2.0f", hum3); else strcpy(h3s, "--");
+        snprintf(hAvgs, sizeof(hAvgs), "%2.0f", avgHum);
         char buf[21];
-        snprintf(buf, sizeof(buf), " HUMID:    %4.1f %%  ", avgHum);
+        snprintf(buf, sizeof(buf), "H: %s, %s, %s Avg.%s", h1s, h2s, h3s, hAvgs);
         pLcd->print(buf);
     } else {
-        pLcd->print(" HUMID:   --.- %   ");
+        pLcd->print("H: --, --, -- Avg.--");
     }
 
     pLcd->setCursor(0, 3);
@@ -730,17 +735,8 @@ void drawMainMenuScreen() {
     pLcd->setCursor(0, 0);
     pLcd->print("==== MAIN MENU =====");
 
-    char s1[4], s2[4], s3[4], sAvg[4];
-    if (valid1) snprintf(s1, sizeof(s1), "%2.0f", temp1); else strcpy(s1, "--");
-    if (valid2) snprintf(s2, sizeof(s2), "%2.0f", temp2); else strcpy(s2, "--");
-    if (valid3) snprintf(s3, sizeof(s3), "%2.0f", temp3); else strcpy(s3, "--");
-    if (sensorValid) snprintf(sAvg, sizeof(sAvg), "%2.0f", avgTemp); else strcpy(sAvg, "--");
-
-    char b1[21];
-    snprintf(b1, sizeof(b1), "%s%s, %s, %s, Avg. %s", mainMenuIndex == 0 ? ">" : " ", s1, s2, s3, sAvg);
-
     pLcd->setCursor(0, 1);
-    pLcd->print(b1);
+    pLcd->print(mainMenuIndex == 0 ? "> 1. Temperature    " : "  1. Temperature    ");
 
     pLcd->setCursor(0, 2);
     pLcd->print(mainMenuIndex == 1 ? "> 2. Humidity       " : "  2. Humidity       ");
@@ -757,18 +753,42 @@ void drawGlobalTargetScreen() {
         pLcd->print("= GLOBAL HUM  (ALL)=");
     }
 
-    char b1[21], b2[21];
-    if (mainMenuIndex == 0) {
-        snprintf(b1, sizeof(b1), "%s 1. Min: %4.1f%cC   ", globalTarget == 0 ? ">" : " ", globalTempMin, 223);
-        snprintf(b2, sizeof(b2), "%s 2. Max: %4.1f%cC   ", globalTarget == 1 ? ">" : " ", globalTempMax, 223);
+    // Line 1: Live 3-sensor readings and live Average
+    pLcd->setCursor(0, 1);
+    if (sensorValid) {
+        char buf[21];
+        if (mainMenuIndex == 0) {
+            char s1[4], s2[4], s3[4], sAvg[4];
+            if (valid1) snprintf(s1, sizeof(s1), "%2.0f", temp1); else strcpy(s1, "--");
+            if (valid2) snprintf(s2, sizeof(s2), "%2.0f", temp2); else strcpy(s2, "--");
+            if (valid3) snprintf(s3, sizeof(s3), "%2.0f", temp3); else strcpy(s3, "--");
+            snprintf(sAvg, sizeof(sAvg), "%2.0f", avgTemp);
+            snprintf(buf, sizeof(buf), "T: %s, %s, %s Avg.%s", s1, s2, s3, sAvg);
+        } else {
+            char h1s[4], h2s[4], h3s[4], hAvgs[4];
+            if (valid1) snprintf(h1s, sizeof(h1s), "%2.0f", hum1); else strcpy(h1s, "--");
+            if (valid2) snprintf(h2s, sizeof(h2s), "%2.0f", hum2); else strcpy(h2s, "--");
+            if (valid3) snprintf(h3s, sizeof(h3s), "%2.0f", hum3); else strcpy(h3s, "--");
+            snprintf(hAvgs, sizeof(hAvgs), "%2.0f", avgHum);
+            snprintf(buf, sizeof(buf), "H: %s, %s, %s Avg.%s", h1s, h2s, h3s, hAvgs);
+        }
+        pLcd->print(buf);
     } else {
-        snprintf(b1, sizeof(b1), "%s 1. Min: %4.1f%%    ", globalTarget == 0 ? ">" : " ", globalHumMin);
-        snprintf(b2, sizeof(b2), "%s 2. Max: %4.1f%%    ", globalTarget == 1 ? ">" : " ", globalHumMax);
+        pLcd->print(mainMenuIndex == 0 ? "T: --, --, -- Avg.--" : "H: --, --, -- Avg.--");
     }
 
-    pLcd->setCursor(0, 1);
-    pLcd->print(b1);
+    // Line 2: Min / Max setting targets with selector
     pLcd->setCursor(0, 2);
+    char b2[21];
+    if (mainMenuIndex == 0) {
+        snprintf(b2, sizeof(b2), "%sMn:%4.1fC  %sMx:%4.1fC", 
+                 globalTarget == 0 ? ">" : " ", globalTempMin,
+                 globalTarget == 1 ? ">" : " ", globalTempMax);
+    } else {
+        snprintf(b2, sizeof(b2), "%sMn:%4.1f%% %sMx:%4.1f%%", 
+                 globalTarget == 0 ? ">" : " ", globalHumMin,
+                 globalTarget == 1 ? ">" : " ", globalHumMax);
+    }
     pLcd->print(b2);
 
     pLcd->setCursor(0, 3);
@@ -784,7 +804,13 @@ void drawGlobalEditScreen() {
     }
 
     pLcd->setCursor(0, 1);
-    pLcd->print("Press UP/DN to set: ");
+    char refBuf[21];
+    if (mainMenuIndex == 0) {
+        snprintf(refBuf, sizeof(refBuf), "Live Avg: %4.1f %cC   ", avgTemp, 223);
+    } else {
+        snprintf(refBuf, sizeof(refBuf), "Live Avg: %4.1f %%    ", avgHum);
+    }
+    pLcd->print(refBuf);
 
     pLcd->setCursor(0, 2);
     char b2[21];
