@@ -699,39 +699,83 @@ void updateLCD() {
 }
 
 void drawHomeScreen() {
-    pLcd->setCursor(0, 0);
-    pLcd->print("====================");
+    // Auto-cycle home screen every 5 seconds between Temperature (0) and Humidity (1)
+    static unsigned long lastHomeCycle = 0;
+    static int homePage = 0;
 
-    pLcd->setCursor(0, 1);
-    if (sensorValid) {
-        char s1[4], s2[4], s3[4], sAvg[4];
-        if (valid1) snprintf(s1, sizeof(s1), "%2.0f", temp1); else strcpy(s1, "--");
-        if (valid2) snprintf(s2, sizeof(s2), "%2.0f", temp2); else strcpy(s2, "--");
-        if (valid3) snprintf(s3, sizeof(s3), "%2.0f", temp3); else strcpy(s3, "--");
-        snprintf(sAvg, sizeof(sAvg), "%2.0f", avgTemp);
-        char buf[21];
-        snprintf(buf, sizeof(buf), "T: %s, %s, %s Avg.%s", s1, s2, s3, sAvg);
-        pLcd->print(buf);
-    } else {
-        pLcd->print("T: --, --, -- Avg.--");
+    if (millis() - lastHomeCycle > 5000) {
+        lastHomeCycle = millis();
+        homePage = 1 - homePage;
+        if (lcdAvailable && pLcd != nullptr) pLcd->clear();
     }
 
-    pLcd->setCursor(0, 2);
-    if (sensorValid) {
-        char h1s[4], h2s[4], h3s[4], hAvgs[4];
-        if (valid1) snprintf(h1s, sizeof(h1s), "%2.0f", hum1); else strcpy(h1s, "--");
-        if (valid2) snprintf(h2s, sizeof(h2s), "%2.0f", hum2); else strcpy(h2s, "--");
-        if (valid3) snprintf(h3s, sizeof(h3s), "%2.0f", hum3); else strcpy(h3s, "--");
-        snprintf(hAvgs, sizeof(hAvgs), "%2.0f", avgHum);
-        char buf[21];
-        snprintf(buf, sizeof(buf), "H: %s, %s, %s Avg.%s", h1s, h2s, h3s, hAvgs);
-        pLcd->print(buf);
-    } else {
-        pLcd->print("H: --, --, -- Avg.--");
-    }
+    if (homePage == 0) {
+        // --- PAGE 1: TEMPERATURE (T1, T2, T3, AVG) ---
+        pLcd->setCursor(0, 0);
+        if (valid1) {
+            char b[21]; snprintf(b, sizeof(b), " Temp 1 :   %4.1f %cC ", temp1, 223);
+            pLcd->print(b);
+        } else {
+            pLcd->print(" Temp 1 :   --.- \xDF" "C ");
+        }
 
-    pLcd->setCursor(0, 3);
-    pLcd->print("[MENU] Main Settings");
+        pLcd->setCursor(0, 1);
+        if (valid2) {
+            char b[21]; snprintf(b, sizeof(b), " Temp 2 :   %4.1f %cC ", temp2, 223);
+            pLcd->print(b);
+        } else {
+            pLcd->print(" Temp 2 :   --.- \xDF" "C ");
+        }
+
+        pLcd->setCursor(0, 2);
+        if (valid3) {
+            char b[21]; snprintf(b, sizeof(b), " Temp 3 :   %4.1f %cC ", temp3, 223);
+            pLcd->print(b);
+        } else {
+            pLcd->print(" Temp 3 :   --.- \xDF" "C ");
+        }
+
+        pLcd->setCursor(0, 3);
+        if (sensorValid) {
+            char b[21]; snprintf(b, sizeof(b), ">AVG TEMP:  %4.1f %cC ", avgTemp, 223);
+            pLcd->print(b);
+        } else {
+            pLcd->print(">AVG TEMP:  --.- \xDF" "C ");
+        }
+    } else {
+        // --- PAGE 2: HUMIDITY (H1, H2, H3, AVG) ---
+        pLcd->setCursor(0, 0);
+        if (valid1) {
+            char b[21]; snprintf(b, sizeof(b), " Humid 1:   %4.1f %%  ", hum1);
+            pLcd->print(b);
+        } else {
+            pLcd->print(" Humid 1:   --.- %   ");
+        }
+
+        pLcd->setCursor(0, 1);
+        if (valid2) {
+            char b[21]; snprintf(b, sizeof(b), " Humid 2:   %4.1f %%  ", hum2);
+            pLcd->print(b);
+        } else {
+            pLcd->print(" Humid 2:   --.- %   ");
+        }
+
+        pLcd->setCursor(0, 2);
+        if (valid3) {
+            char b[21]; snprintf(b, sizeof(b), " Humid 3:   %4.1f %%  ", hum3);
+            pLcd->print(b);
+        } else {
+            pLcd->print(" Humid 3:   --.- %   ");
+        }
+
+        pLcd->setCursor(0, 3);
+        if (sensorValid) {
+            char b[21]; snprintf(b, sizeof(b), ">AVG HUM :  %4.1f %%  ", avgHum);
+            pLcd->print(b);
+        } else {
+            pLcd->print(">AVG HUM :  --.- %   ");
+        }
+    }
 }
 
 void drawMainMenuScreen() {

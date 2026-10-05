@@ -89,27 +89,39 @@ Connect your smartphone to the ESP32 Access Point:
 
 ## 📟 4. 2004 LCD Menu Navigation Guide
 
-### 🏠 Professional Home Screen
-Displays individual sensors (T1, T2, T3) and live Average temperature:
-```text
-====================
- 23, 21, 25, Avg. 23
- HUMID:    58.2 %   
-[MENU] Main Settings
-```
-Pressing `[MENU]` (or `[UP]`/`[DOWN]`) enters the **Main Menu**.
+### 🏠 Professional Home Screen (Auto-Cycles every 5 seconds)
+To provide a spacious, clean display without crowding, the idle home screen rotates automatically between **Temperature** and **Humidity** every 5 seconds:
 
-### 📋 Main Menu (3 Top-Level Options)
+#### Page 1: Temperature Overview (T1, T2, T3 & Live Average)
+```text
+ Temp 1 :   28.4 °C 
+ Temp 2 :   27.8 °C 
+ Temp 3 :   28.1 °C 
+>AVG TEMP:  28.1 °C 
+```
+
+#### Page 2: Humidity Overview (H1, H2, H3 & Live Average)
+```text
+ Humid 1:   58.2 %  
+ Humid 2:   60.1 %  
+ Humid 3:   59.0 %  
+>AVG HUM :  59.1 %  
+```
+Pressing **`[MENU]`**, **`[UP]`**, or **`[DOWN]`** at any time instantly opens the **Main Menu**.
+
+---
+
+### 📋 Main Menu (Clean & Classic 3 Options)
 ```text
 ==== MAIN MENU =====
->23, 21, 25, Avg. 23
+> 1. Temperature    
   2. Humidity       
   3. Relays (1-16)  
 ```
-* **`> 23, 21, 25, Avg. 23` (Temperature / Global All-Relay Setup):**
-  Shows live T1, T2, T3 and Average. Pressing `[MENU]` sets Min and Max temperature thresholds across all 16 relays simultaneously.
+* **`1. Temperature` (Global All-Relay Setup):**
+  Displays live readings and allows editing Min and Max temperature thresholds applied across all 16 relays in `Auto Temperature` mode.
 * **`2. Humidity` (Global All-Relay Setup):**
-  Sets Min and Max humidity thresholds across all 16 relays simultaneously in `Auto Humidity` mode.
+  Displays live readings and allows editing Min and Max humidity thresholds applied across all 16 relays in `Auto Humidity` mode.
 * **`3. Relays (1-16)` (Individual Relay Customization):**
   Scroll through Relays 01 to 16 with `UP`/`DOWN`. Press `[MENU]` to customize that relay:
   - Toggle Mode: `Auto Temp` $\longleftrightarrow$ `Auto Hum`
