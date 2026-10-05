@@ -52,7 +52,7 @@ A comprehensive, production-grade 16-channel automation hub powered by the **ESP
 | **VCC (Red)** | **`5V` (VIN)** | 5V power supply |
 | **GND (Black)** | **`GND`** | Common Ground |
 
-### ☣️ MQ-137 Ammonia (NH3) Gas Sensor (Display Only)
+### ☣️ MQ-137 Ammonia (NH3) Gas Sensor
 | MQ-137 Pin | ESP32-S3 Pin | Notes |
 |---|---|---|
 | **`AO` (Analog)** | **`GPIO 3`** | **ADC1_CH2** — Live Ammonia PPM (0.0 to 500 ppm) |
@@ -60,8 +60,8 @@ A comprehensive, production-grade 16-channel automation hub powered by the **ESP
 | **`VCC`** | **`5V` (VIN)** | 5V power supply for internal heater |
 | **`GND`** | **`GND`** | Common Ground |
 
-> [!IMPORTANT]
-> The Water Flow and MQ-137 Ammonia Sensors are **for real-time monitoring and display only** (on LCD Page 3 & 4 and Web Dashboard). Relays are completely unaffected and remain solely governed by Temperature and Humidity thresholds.
+> [!NOTE]
+> Relays can now be configured in **Mode 3: Auto Ammonia (NH3)**! When a relay is set to Ammonia mode, it triggers based on your configured PPM thresholds (e.g. exhaust fans turn ON when ammonia exceeds maximum threshold). Both physical LCD buttons and Web Dashboard allow you to customize Min and Max PPM thresholds for any relay.
 
 ### 🔘 4 Physical Navigation Buttons (Internal Pullup)
 | Button | ESP32-S3 Pin | Function |

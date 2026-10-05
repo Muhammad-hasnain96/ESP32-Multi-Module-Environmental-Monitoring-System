@@ -123,7 +123,7 @@ String lcdStatusStr = "Scanning I2C...";
 
 // Relay Config
 struct RelayConfig {
-    int mode;        // 0: Manual, 1: Auto Temp, 2: Auto Hum
+    int mode;        // 0: Manual, 1: Auto Temp, 2: Auto Hum, 3: Auto Ammonia (NH3)
     float minVal;    // Min threshold
     float maxVal;    // Max threshold
     int action;      // 0: Above Max ON, 1: Below Min ON, 2: Inside Range ON
@@ -171,6 +171,8 @@ float globalTempMin = 28.0;
 float globalTempMax = 32.0;
 float globalHumMin = 40.0;
 float globalHumMax = 75.0;
+float globalNH3Min = 10.0;
+float globalNH3Max = 25.0;
 
 int selectedRelay = 0;         // 0 to 15
 int relayMenuIndex = 0;        // 0: Mode, 1: Min, 2: Max
@@ -447,33 +449,29 @@ bool checkButton(Button &btn) {
     int reading = digitalRead(btn.pin);
     bool triggered = false;
 
+    // Check if state changed
     if (reading != btn.lastState) {
         btn.lastDebounceTime = millis();
+        btn.lastState = reading;
     }
 
-    if ((millis() - btn.lastDebounceTime) > 35) {
-        // Initial Press
-        if (reading == LOW && !btn.pressed) {
-            btn.pressed = true;
-            btn.pressStartTime = millis();
-            btn.lastRepeatTime = millis();
-            triggered = true;
-            Serial.printf("🔘 Button [%s] PRESSED (GPIO %d) -> Menu State: %d\n", btn.name, btn.pin, currentMenu);
-        }
-        // Auto-repeat when held down (after 400ms delay, repeat every 120ms)
-        else if (reading == LOW && btn.pressed) {
-            if ((millis() - btn.pressStartTime > 400) && (millis() - btn.lastRepeatTime > 120)) {
+    if ((millis() - btn.lastDebounceTime) > 25) {
+        if (reading == LOW) {
+            if (!btn.pressed) {
+                btn.pressed = true;
+                btn.pressStartTime = millis();
+                btn.lastRepeatTime = millis();
+                triggered = true;
+                Serial.printf("🔘 Button [%s] (GPIO %d) -> Menu: %d\n", btn.name, btn.pin, currentMenu);
+            } else if ((millis() - btn.pressStartTime > 350) && (millis() - btn.lastRepeatTime > 120)) {
                 btn.lastRepeatTime = millis();
                 triggered = true;
             }
-        }
-        // Button Released
-        else if (reading == HIGH && btn.pressed) {
+        } else {
             btn.pressed = false;
         }
     }
 
-    btn.lastState = reading;
     return triggered;
 }
 
@@ -669,12 +667,18 @@ void updateButtons() {
                 updateLCD();
             } else if (bMenu) {
                 if (relayMenuIndex == 0) {
-                    // Toggle Mode between Auto Temp (1) and Auto Hum (2)
-                    configs[selectedRelay].mode = (configs[selectedRelay].mode == 1) ? 2 : 1;
-                    if (configs[selectedRelay].mode == 2 && configs[selectedRelay].maxVal <= 60.0 && configs[selectedRelay].minVal <= 40.0) {
+                    // Toggle Mode between Auto Temp (1), Auto Hum (2), and Auto Ammonia (3)
+                    if (configs[selectedRelay].mode == 1) configs[selectedRelay].mode = 2;
+                    else if (configs[selectedRelay].mode == 2) configs[selectedRelay].mode = 3;
+                    else configs[selectedRelay].mode = 1;
+
+                    if (configs[selectedRelay].mode == 3) {
+                        configs[selectedRelay].minVal = globalNH3Min;
+                        configs[selectedRelay].maxVal = globalNH3Max;
+                    } else if (configs[selectedRelay].mode == 2) {
                         configs[selectedRelay].minVal = globalHumMin;
                         configs[selectedRelay].maxVal = globalHumMax;
-                    } else if (configs[selectedRelay].mode == 1 && configs[selectedRelay].maxVal > 60.0) {
+                    } else {
                         configs[selectedRelay].minVal = globalTempMin;
                         configs[selectedRelay].maxVal = globalTempMax;
                     }
@@ -687,7 +691,9 @@ void updateButtons() {
                         pLcd->setCursor(3, 1);
                         pLcd->print("Mode Updated!");
                         pLcd->setCursor(1, 2);
-                        pLcd->print(configs[selectedRelay].mode == 2 ? "-> Auto Humidity" : "-> Auto Temperature");
+                        if (configs[selectedRelay].mode == 3) pLcd->print("-> Auto Ammonia NH3");
+                        else if (configs[selectedRelay].mode == 2) pLcd->print("-> Auto Humidity");
+                        else pLcd->print("-> Auto Temperature");
                         delay(600);
                         pLcd->clear();
                     }
@@ -704,7 +710,10 @@ void updateButtons() {
 
         case STATE_EDIT_VALUE:
             if (bUp) {
-                if (configs[selectedRelay].mode == 2) {
+                if (configs[selectedRelay].mode == 3) {
+                    editingVal += 1.0;
+                    if (editingVal > 200.0) editingVal = 200.0;
+                } else if (configs[selectedRelay].mode == 2) {
                     editingVal += 1.0;
                     if (editingVal > 99.0) editingVal = 99.0;
                 } else {
@@ -713,7 +722,10 @@ void updateButtons() {
                 }
                 updateLCD();
             } else if (bDown) {
-                if (configs[selectedRelay].mode == 2) {
+                if (configs[selectedRelay].mode == 3) {
+                    editingVal -= 1.0;
+                    if (editingVal < 0.0) editingVal = 0.0;
+                } else if (configs[selectedRelay].mode == 2) {
                     editingVal -= 1.0;
                     if (editingVal < 10.0) editingVal = 10.0;
                 } else {
@@ -757,8 +769,8 @@ void updateButtons() {
                     pLcd->print("*** SAVED! ***");
                     pLcd->setCursor(1, 2);
                     char sb[21];
-                    char u = (configs[selectedRelay].mode == 2) ? '%' : 'C';
-                    snprintf(sb, sizeof(sb), "Mn:%4.1f%c  Mx:%4.1f%c", configs[selectedRelay].minVal, u, configs[selectedRelay].maxVal, u);
+                    const char* u = (configs[selectedRelay].mode == 3) ? "p" : ((configs[selectedRelay].mode == 2) ? "%" : "C");
+                    snprintf(sb, sizeof(sb), "Mn:%3.0f%s  Mx:%3.0f%s", configs[selectedRelay].minVal, u, configs[selectedRelay].maxVal, u);
                     pLcd->print(sb);
                     delay(700);
                     pLcd->clear();
@@ -1016,7 +1028,9 @@ void drawSelectRelayScreen() {
 
     pLcd->setCursor(0, 2);
     char buf2[21];
-    if (configs[selectedRelay].mode == 2) {
+    if (configs[selectedRelay].mode == 3) {
+        snprintf(buf2, sizeof(buf2), "[NH3 ] Mn:%2.0f  Mx:%2.0f ", configs[selectedRelay].minVal, configs[selectedRelay].maxVal);
+    } else if (configs[selectedRelay].mode == 2) {
         snprintf(buf2, sizeof(buf2), "[HUM ] Mn:%2.0f%% Mx:%2.0f%% ", configs[selectedRelay].minVal, configs[selectedRelay].maxVal);
     } else {
         snprintf(buf2, sizeof(buf2), "[TEMP] Mn:%4.1f Mx:%4.1f", configs[selectedRelay].minVal, configs[selectedRelay].maxVal);
@@ -1033,27 +1047,29 @@ void drawRelayMenuScreen() {
     snprintf(b0, sizeof(b0), "-- RELAY %02d SETUP --", selectedRelay + 1);
     pLcd->print(b0);
 
+    const char* modeStr = (configs[selectedRelay].mode == 3) ? "Auto NH3 " : ((configs[selectedRelay].mode == 2) ? "Auto Hum " : "Auto Temp");
+    const char* uStr = (configs[selectedRelay].mode == 3) ? "ppm" : ((configs[selectedRelay].mode == 2) ? "%  " : "C  ");
+
     pLcd->setCursor(0, 1);
     char b1[21];
-    snprintf(b1, sizeof(b1), "%s 1.Mode:%s", relayMenuIndex == 0 ? ">" : " ", configs[selectedRelay].mode == 2 ? "Auto Hum " : "Auto Temp");
+    snprintf(b1, sizeof(b1), "%s 1.Mode:%s", relayMenuIndex == 0 ? ">" : " ", modeStr);
     pLcd->print(b1);
 
-    char u = (configs[selectedRelay].mode == 2) ? '%' : 'C';
     pLcd->setCursor(0, 2);
     char b2[21];
-    snprintf(b2, sizeof(b2), "%s 2.Min : %4.1f %c    ", relayMenuIndex == 1 ? ">" : " ", configs[selectedRelay].minVal, u);
+    snprintf(b2, sizeof(b2), "%s 2.Min : %4.1f %s", relayMenuIndex == 1 ? ">" : " ", configs[selectedRelay].minVal, uStr);
     pLcd->print(b2);
 
     pLcd->setCursor(0, 3);
     char b3[21];
-    snprintf(b3, sizeof(b3), "%s 3.Max : %4.1f %c    ", relayMenuIndex == 2 ? ">" : " ", configs[selectedRelay].maxVal, u);
+    snprintf(b3, sizeof(b3), "%s 3.Max : %4.1f %s", relayMenuIndex == 2 ? ">" : " ", configs[selectedRelay].maxVal, uStr);
     pLcd->print(b3);
 }
 
 void drawEditValueScreen() {
     pLcd->setCursor(0, 0);
     char b0[21];
-    const char* typeName = (configs[selectedRelay].mode == 2) ? "HUM " : "TEMP";
+    const char* typeName = (configs[selectedRelay].mode == 3) ? "NH3 " : ((configs[selectedRelay].mode == 2) ? "HUM " : "TEMP");
     snprintf(b0, sizeof(b0), "RELAY %02d: %s %s", selectedRelay + 1, selectedTarget == 0 ? "MIN" : "MAX", typeName);
     pLcd->print(b0);
 
@@ -1062,7 +1078,9 @@ void drawEditValueScreen() {
 
     pLcd->setCursor(0, 2);
     char b2[21];
-    if (configs[selectedRelay].mode == 2) {
+    if (configs[selectedRelay].mode == 3) {
+        snprintf(b2, sizeof(b2), " >>> [ %4.1f ppm ] <<<", editingVal);
+    } else if (configs[selectedRelay].mode == 2) {
         snprintf(b2, sizeof(b2), " >>> [ %4.1f %%  ] <<<", editingVal);
     } else {
         snprintf(b2, sizeof(b2), " >>> [ %4.1f %cC ] <<<", editingVal, 223);
@@ -1121,11 +1139,28 @@ void readDHTSensor() {
 }
 
 void evaluateSingleRelay(int i, bool isConfigUpdate) {
-    if (!sensorValid || configs[i].mode == 0) return;
+    if (configs[i].mode == 0) return;
+    if ((configs[i].mode == 1 || configs[i].mode == 2) && !sensorValid) return;
 
-    float val = (configs[i].mode == 1) ? currentTemp : currentHum;
-    String valUnit = (configs[i].mode == 1) ? "°C" : "%";
-    String typeName = (configs[i].mode == 1) ? "Avg Temp" : "Avg Hum";
+    float val = 0.0f;
+    String valUnit = "";
+    String typeName = "";
+
+    if (configs[i].mode == 1) {
+        val = currentTemp;
+        valUnit = "°C";
+        typeName = "Avg Temp";
+    } else if (configs[i].mode == 2) {
+        val = currentHum;
+        valUnit = "%";
+        typeName = "Avg Hum";
+    } else if (configs[i].mode == 3) {
+        val = currentNH3;
+        valUnit = " ppm";
+        typeName = "Ammonia NH3";
+    } else {
+        return;
+    }
 
     float minVal = configs[i].minVal;
     float maxVal = configs[i].maxVal;
@@ -1135,8 +1170,8 @@ void evaluateSingleRelay(int i, bool isConfigUpdate) {
 
     if (configs[i].action == 0) {
         // Outside Range ON (User Requirement):
-        // 1. Relay ON when temp/hum is EQUAL OR ABOVE maximum threshold (val >= maxVal)
-        // 2. Relay ON when temp/hum is EQUAL OR BELOW minimum threshold (val <= minVal)
+        // 1. Relay ON when temp/hum/NH3 is EQUAL OR ABOVE maximum threshold (val >= maxVal)
+        // 2. Relay ON when temp/hum/NH3 is EQUAL OR BELOW minimum threshold (val <= minVal)
         // 3. Relay automatically OFF between min and max thresholds (minVal < val < maxVal)
         if (minVal > maxVal) { float t = minVal; minVal = maxVal; maxVal = t; configs[i].minVal = minVal; configs[i].maxVal = maxVal; }
         if (val >= maxVal) {
@@ -1147,7 +1182,7 @@ void evaluateSingleRelay(int i, bool isConfigUpdate) {
             reason = "Auto ON: " + typeName + " " + String(val, 1) + valUnit + " <= Min " + String(minVal, 1) + valUnit;
         } else {
             shouldBeOn = false;
-            reason = "Auto OFF: In Safe Range (" + String(minVal, 1) + " - " + String(maxVal, 1) + valUnit + ") [Avg: " + String(val, 1) + valUnit + "]";
+            reason = "Auto OFF: In Safe Range (" + String(minVal, 1) + " - " + String(maxVal, 1) + valUnit + ") [Val: " + String(val, 1) + valUnit + "]";
         }
     }
     else if (configs[i].action == 1) { // Inside Range ON
@@ -1160,7 +1195,7 @@ void evaluateSingleRelay(int i, bool isConfigUpdate) {
             reason = "Auto OFF: Out of Range";
         }
     }
-    else if (configs[i].action == 2) { // Above Max ON (Cooling Only)
+    else if (configs[i].action == 2) { // Above Max ON (Exhaust / Ventilation / Cooling)
         if (minVal > maxVal) { float t = minVal; minVal = maxVal; maxVal = t; configs[i].minVal = minVal; configs[i].maxVal = maxVal; }
         if (val >= maxVal) {
             shouldBeOn = true;
@@ -1170,7 +1205,7 @@ void evaluateSingleRelay(int i, bool isConfigUpdate) {
             reason = "Auto OFF: " + typeName + " " + String(val, 1) + valUnit + " <= " + String(minVal, 1) + valUnit;
         }
     }
-    else if (configs[i].action == 3) { // Below Min ON (Heating Only)
+    else if (configs[i].action == 3) { // Below Min ON (Heating / Scrubbing Only)
         if (minVal > maxVal) { float t = minVal; minVal = maxVal; maxVal = t; configs[i].minVal = minVal; configs[i].maxVal = maxVal; }
         if (val <= minVal) {
             shouldBeOn = true;
@@ -1189,7 +1224,6 @@ void evaluateSingleRelay(int i, bool isConfigUpdate) {
 }
 
 void evaluateAutoRules() {
-    if (!sensorValid) return;
     for (int i = 0; i < NUM_RELAYS; i++) {
         evaluateSingleRelay(i, false);
     }
@@ -1655,9 +1689,10 @@ void handleRoot() {
                 <div class="config-grid">
                     <div class="field">
                         <label>Mode</label>
-                        <select id="rMode${i}" class="input-sm">
+                        <select id="rMode${i}" class="input-sm" onchange="updateModeUnits(${i})">
                             <option value="1">🌡️ Auto Temp</option>
                             <option value="2">💧 Auto Hum</option>
+                            <option value="3">☣️ Auto Ammonia (NH3)</option>
                             <option value="0">✋ Manual</option>
                         </select>
                     </div>
@@ -1666,16 +1701,16 @@ void handleRoot() {
                         <select id="rAction${i}" class="input-sm">
                             <option value="0">⚡ Outside Range ON (≤Min or ≥Max)</option>
                             <option value="1">🟢 Inside Range ON (Min to Max)</option>
-                            <option value="2">❄️ Above Max ON (Cooling)</option>
-                            <option value="3">🔥 Below Min ON (Heating)</option>
+                            <option value="2">❄️ Above Max ON (Cooling/Exhaust)</option>
+                            <option value="3">🔥 Below Min ON (Heating/Scrub)</option>
                         </select>
                     </div>
                     <div class="field">
-                        <label>🔥 Max Threshold (°C) [ON if ≥]</label>
+                        <label id="rMaxLbl${i}">🔥 Max Threshold (°C) [ON if ≥]</label>
                         <input type="number" step="0.5" id="rMax${i}" class="input-sm">
                     </div>
                     <div class="field">
-                        <label>❄️ Min Threshold (°C) [ON if ≤]</label>
+                        <label id="rMinLbl${i}">❄️ Min Threshold (°C) [ON if ≤]</label>
                         <input type="number" step="0.5" id="rMin${i}" class="input-sm">
                     </div>
                 </div>
@@ -1763,7 +1798,10 @@ void handleRoot() {
                     const minEl = document.getElementById('rMin' + r.id);
                     const maxEl = document.getElementById('rMax' + r.id);
 
-                    if(modeEl && document.activeElement !== modeEl) modeEl.value = r.mode;
+                    if(modeEl && document.activeElement !== modeEl) {
+                        modeEl.value = r.mode;
+                        updateModeUnits(r.id);
+                    }
                     if(actionEl && document.activeElement !== actionEl) actionEl.value = r.action;
                     if(minEl && document.activeElement !== minEl) minEl.value = r.min;
                     if(maxEl && document.activeElement !== maxEl) maxEl.value = r.max;
@@ -1772,6 +1810,22 @@ void handleRoot() {
 
             document.getElementById('staStatus').innerText = d.staStatus;
             document.getElementById('staIP').innerText = d.staIP;
+        }
+
+        function updateModeUnits(id) {
+            const modeEl = document.getElementById('rMode' + id);
+            if(!modeEl) return;
+            const m = modeEl.value;
+            const u = (m === '3') ? ' (ppm)' : ((m === '2') ? ' (%)' : ' (°C)');
+            const step = (m === '3') ? '1.0' : '0.5';
+            const minEl = document.getElementById('rMin' + id);
+            const maxEl = document.getElementById('rMax' + id);
+            if(minEl) minEl.step = step;
+            if(maxEl) maxEl.step = step;
+            const maxLbl = document.getElementById('rMaxLbl' + id);
+            const minLbl = document.getElementById('rMinLbl' + id);
+            if(maxLbl) maxLbl.innerText = '🔥 Max Threshold' + u + ' [ON if ≥]';
+            if(minLbl) minLbl.innerText = '❄️ Min Threshold' + u + ' [ON if ≤]';
         }
 
         function fetchStatus() {
