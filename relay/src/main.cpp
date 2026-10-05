@@ -197,6 +197,9 @@ void setup() {
     initLCD();
 
     // Start 3x DHT11 Sensors (GPIO 8, 3, 42)
+    pinMode(DHTPIN1, INPUT_PULLUP);
+    pinMode(DHTPIN2, INPUT_PULLUP);
+    pinMode(DHTPIN3, INPUT_PULLUP);
     dht1.begin();
     dht2.begin();
     dht3.begin();
@@ -204,7 +207,7 @@ void setup() {
     // Load Relay Thresholds
     loadRelayConfigs();
 
-    delay(800);
+    delay(1500);
     readDHTSensor();
     evaluateAutoRules();
     Serial.println("\n\n========================================================");
@@ -903,13 +906,13 @@ void readDHTSensor() {
     float t3 = dht3.readTemperature();
     float h3 = dht3.readHumidity();
 
-    valid1 = !isnan(t1) && !isnan(h1) && t1 > -20.0 && t1 < 80.0;
-    valid2 = !isnan(t2) && !isnan(h2) && t2 > -20.0 && t2 < 80.0;
-    valid3 = !isnan(t3) && !isnan(h3) && t3 > -20.0 && t3 < 80.0;
+    bool ok1 = !isnan(t1) && !isnan(h1) && t1 > -20.0 && t1 < 80.0;
+    bool ok2 = !isnan(t2) && !isnan(h2) && t2 > -20.0 && t2 < 80.0;
+    bool ok3 = !isnan(t3) && !isnan(h3) && t3 > -20.0 && t3 < 80.0;
 
-    if (valid1) { temp1 = t1; hum1 = h1; }
-    if (valid2) { temp2 = t2; hum2 = h2; }
-    if (valid3) { temp3 = t3; hum3 = h3; }
+    if (ok1) { temp1 = t1; hum1 = h1; valid1 = true; }
+    if (ok2) { temp2 = t2; hum2 = h2; valid2 = true; }
+    if (ok3) { temp3 = t3; hum3 = h3; valid3 = true; }
 
     float sumT = 0.0;
     float sumH = 0.0;
