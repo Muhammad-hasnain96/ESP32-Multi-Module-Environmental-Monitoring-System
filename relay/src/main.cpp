@@ -13,6 +13,7 @@
  *   Sensor 1 (T1): GPIO 8
  *   Sensor 2 (T2): GPIO 3
  *   Sensor 3 (T3): GPIO 42
+ * - Water Flow Sensor:      GPIO 46 (Digital Pulse - Display Only)
  * - 2004 I2C LCD Display:
  *   SDA -> GPIO 17
  *   SCL -> GPIO 18
@@ -52,6 +53,17 @@ const int RELAY_PINS[NUM_RELAYS] = {
 DHT dht1(DHTPIN1, DHTTYPE);
 DHT dht2(DHTPIN2, DHTTYPE);
 DHT dht3(DHTPIN3, DHTTYPE);
+
+// Water Flow Sensor (Digital Pulse Output on GPIO 46 - Display Only, Relays Unaffected)
+#define PIN_FLOW_SENSOR 46
+volatile unsigned long flowPulseCount = 0;
+float flowRate = 0.0;       // Live Flow Rate in L/min
+float totalLiters = 0.0;    // Accumulated volume in Liters
+unsigned long totalPulses = 0;
+
+void IRAM_ATTR flowPulseISR() {
+    flowPulseCount++;
+}
 
 // I2C LCD Pins (Proven Default I2C Pins: SDA=17, SCL=18)
 #define I2C_SDA 17
@@ -204,6 +216,10 @@ void setup() {
     dht2.begin();
     dht3.begin();
 
+    // Start Water Flow Sensor on GPIO 46
+    pinMode(PIN_FLOW_SENSOR, INPUT);
+    attachInterrupt(digitalPinToInterrupt(PIN_FLOW_SENSOR), flowPulseISR, RISING);
+
     // Load Relay Thresholds
     loadRelayConfigs();
 
@@ -265,6 +281,28 @@ void loop() {
     if (!lcdAvailable && millis() - lastI2CRetry > 4000) {
         lastI2CRetry = millis();
         initLCD();
+    }
+
+    // Calculate Water Flow Rate (L/min) & Total Liters every 1000ms
+    static unsigned long lastFlowCalc = 0;
+    static unsigned long prevPulseCount = 0;
+    if (millis() - lastFlowCalc >= 1000) {
+        unsigned long now = millis();
+        unsigned long dt = now - lastFlowCalc;
+        lastFlowCalc = now;
+
+        noInterrupts();
+        unsigned long currentPulses = flowPulseCount;
+        interrupts();
+
+        unsigned long deltaPulses = (currentPulses >= prevPulseCount) ? (currentPulses - prevPulseCount) : currentPulses;
+        prevPulseCount = currentPulses;
+        totalPulses = currentPulses;
+
+        // Standard 1/2" flow sensor calibration: 7.5 pulses per sec = 1.0 L/min
+        flowRate = ((float)deltaPulses * 1000.0f / (float)dt) / 7.5f;
+        if (flowRate < 0.05f) flowRate = 0.0f; // Noise suppression
+        totalLiters += (flowRate / 60.0f) * ((float)dt / 1000.0f);
     }
 
     // Read Sensor & Evaluate Rules every 2 seconds
@@ -705,7 +743,7 @@ void drawHomeScreen() {
 
     if (millis() - lastHomeCycle > 5000) {
         lastHomeCycle = millis();
-        homePage = 1 - homePage;
+        homePage = (homePage + 1) % 3;
         if (lcdAvailable && pLcd != nullptr) pLcd->clear();
     }
 
@@ -742,7 +780,7 @@ void drawHomeScreen() {
         } else {
             pLcd->print(">AVG TEMP:  --.- \xDF" "C ");
         }
-    } else {
+    } else if (homePage == 1) {
         // --- PAGE 2: HUMIDITY (H1, H2, H3, AVG) ---
         pLcd->setCursor(0, 0);
         if (valid1) {
@@ -775,6 +813,25 @@ void drawHomeScreen() {
         } else {
             pLcd->print(">AVG HUM :  --.- %   ");
         }
+    } else {
+        // --- PAGE 3: WATER FLOW (Rate, Total, Pulses - Display Only) ---
+        pLcd->setCursor(0, 0);
+        pLcd->print("=== WATER SENSOR ===");
+
+        pLcd->setCursor(0, 1);
+        char b1[21];
+        snprintf(b1, sizeof(b1), " Rate :   %4.1f L/min ", flowRate);
+        pLcd->print(b1);
+
+        pLcd->setCursor(0, 2);
+        char b2[21];
+        snprintf(b2, sizeof(b2), " Total:  %5.1f Liter ", totalLiters);
+        pLcd->print(b2);
+
+        pLcd->setCursor(0, 3);
+        char b3[21];
+        snprintf(b3, sizeof(b3), " Pulse:  %-7lu    ", totalPulses);
+        pLcd->print(b3);
     }
 }
 
@@ -1232,6 +1289,9 @@ void handleGetStatus() {
     json += "\"hum3\":" + String(valid3 ? String(hum3, 1) : "\"--\"") + ",";
     json += "\"sensorOk\":" + String(sensorValid ? "true" : "false") + ",";
     json += "\"lcdStatus\":\"" + lcdStatusStr + "\",";
+    json += "\"flowRate\":" + String(flowRate, 1) + ",";
+    json += "\"totalLiters\":" + String(totalLiters, 1) + ",";
+    json += "\"flowPulses\":" + String(totalPulses) + ",";
 
     json += "\"relays\":[";
     for (int i = 0; i < NUM_RELAYS; i++) {
@@ -1396,7 +1456,7 @@ void handleRoot() {
             <p>ESP32-S3 | 2004 LCD + 4 Buttons | 16 Relays</p>
         </div>
 
-        <div class="hero-grid">
+        <div class="hero-grid" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(210px, 1fr)); gap:10px;">
             <div class="sensor-card">
                 <div class="sensor-label">🌡️ Avg Temperature</div>
                 <div class="sensor-val" id="tempVal" style="color:#38bdf8;">--.- °C</div>
@@ -1406,6 +1466,11 @@ void handleRoot() {
                 <div class="sensor-label">💧 Avg Humidity</div>
                 <div class="sensor-val" id="humVal" style="color:#06b6d4;">--.- %</div>
                 <span id="humStatus" style="font-size:0.75rem; color:var(--text-dim);">H1: -- | H2: -- | H3: --</span>
+            </div>
+            <div class="sensor-card">
+                <div class="sensor-label">🌊 Water Flow (GPIO 46)</div>
+                <div class="sensor-val" id="flowVal" style="color:#3b82f6;">0.0 L/m</div>
+                <span id="flowStatus" style="font-size:0.75rem; color:var(--text-dim);">Total: 0.0 L | 0 Pulses</span>
             </div>
         </div>
 
@@ -1555,6 +1620,11 @@ void handleRoot() {
                 document.getElementById('humVal').innerText = '--.- %';
                 document.getElementById('tempStatus').innerText = 'Sensor error (Check GPIO 8, 3, 42)';
                 document.getElementById('humStatus').innerText = 'Sensor error (Check GPIO 8, 3, 42)';
+            }
+
+            if(d.flowRate !== undefined) {
+                document.getElementById('flowVal').innerText = d.flowRate + ' L/m';
+                document.getElementById('flowStatus').innerText = `Total: ${d.totalLiters} L | ${d.flowPulses} Pulses`;
             }
 
             if(d.lcdStatus) {
