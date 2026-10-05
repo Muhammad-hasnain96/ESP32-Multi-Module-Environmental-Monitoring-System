@@ -1,5 +1,9 @@
-# ⚡ ESP32-S3 16-Channel Smart Climate & Relay Hub: Official Circuit & Wiring Diagram
+## 📸 1. Photorealistic Hardware Hookup Diagram (Real Components)
+![16-Channel Relay Hub Realistic Wiring Diagram](Relay_Module_16CH_Realistic_Wiring_Diagram.jpg)
 
+---
+
+## 📐 2. Official Engineering Schematic & Architecture Diagram (2K QHD)
 ![16-Channel Relay Hub Circuit Diagram](Relay_Module_16CH_Circuit_Diagram_HD.jpg)
 
 ---
