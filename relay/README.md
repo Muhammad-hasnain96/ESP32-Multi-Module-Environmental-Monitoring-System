@@ -38,7 +38,7 @@ A comprehensive, production-grade 16-channel automation hub powered by the **ESP
 | Sensor | Data Pin | ESP32-S3 Pin | Notes |
 |---|---|---|---|
 | **DHT11 #1 (T1)** | `DATA` | **`GPIO 8`** | Primary Sensor |
-| **DHT11 #2 (T2)** | `DATA` | **`GPIO 3`** | Multi-Zone Sensor 2 |
+| **DHT11 #2 (T2)** | `DATA` | **`GPIO 48`** | Multi-Zone Sensor 2 (Digital Input) |
 | **DHT11 #3 (T3)** | `DATA` | **`GPIO 42`** | Multi-Zone Sensor 3 |
 | **Power** | `VCC` / `GND` | **`3.3V / 5V` & `GND`** | Common Ground & Clean Power |
 
@@ -52,8 +52,16 @@ A comprehensive, production-grade 16-channel automation hub powered by the **ESP
 | **VCC (Red)** | **`5V` (VIN)** | 5V power supply |
 | **GND (Black)** | **`GND`** | Common Ground |
 
+### ☣️ MQ-137 Ammonia (NH3) Gas Sensor (Display Only)
+| MQ-137 Pin | ESP32-S3 Pin | Notes |
+|---|---|---|
+| **`AO` (Analog)** | **`GPIO 3`** | **ADC1_CH2** — Live Ammonia PPM (0.0 to 500 ppm) |
+| **`DO` (Digital)** | **`GPIO 45`** | Digital Alarm threshold (`HIGH` = Clean, `LOW` = Alert) |
+| **`VCC`** | **`5V` (VIN)** | 5V power supply for internal heater |
+| **`GND`** | **`GND`** | Common Ground |
+
 > [!IMPORTANT]
-> The Water Flow Sensor output is **for real-time monitoring and display only**. Relays are completely unaffected by water flow rate and are solely governed by Temperature and Humidity thresholds.
+> The Water Flow and MQ-137 Ammonia Sensors are **for real-time monitoring and display only** (on LCD Page 3 & 4 and Web Dashboard). Relays are completely unaffected and remain solely governed by Temperature and Humidity thresholds.
 
 ### 🔘 4 Physical Navigation Buttons (Internal Pullup)
 | Button | ESP32-S3 Pin | Function |

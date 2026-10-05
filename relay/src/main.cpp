@@ -11,9 +11,10 @@
  * - Module 3 (4-ch Relay): GPIO 11, 12, 13, 14
  * - DHT11 Sensors (x3 Multi-Zone / Average):
  *   Sensor 1 (T1): GPIO 8
- *   Sensor 2 (T2): GPIO 3
+ *   Sensor 2 (T2): GPIO 48
  *   Sensor 3 (T3): GPIO 42
  * - Water Flow Sensor:      GPIO 46 (Digital Pulse - Display Only)
+ * - MQ-137 Ammonia Sensor:  AO -> GPIO 3 (ADC1_CH2), DO -> GPIO 45 (Alert - Display Only)
  * - 2004 I2C LCD Display:
  *   SDA -> GPIO 17
  *   SCL -> GPIO 18
@@ -44,9 +45,9 @@ const int RELAY_PINS[NUM_RELAYS] = {
     11, 12, 13, 14                 // Module 3 (Relays 13-16)
 };
 
-// 3x DHT11 Sensors (T1 on GPIO 8, T2 on GPIO 3, T3 on GPIO 42)
+// 3x DHT11 Sensors (T1 on GPIO 8, T2 on GPIO 48, T3 on GPIO 42)
 #define DHTPIN1 8
-#define DHTPIN2 3
+#define DHTPIN2 48
 #define DHTPIN3 42
 #define DHTTYPE DHT11
 
@@ -63,6 +64,42 @@ unsigned long totalPulses = 0;
 
 void IRAM_ATTR flowPulseISR() {
     flowPulseCount++;
+}
+
+// MQ-137 Ammonia (NH3) Sensor (Display Only, Relays Unaffected)
+// AO on GPIO 3 (ADC1_CH2), DO on GPIO 45
+#define MQ137_AO 3
+#define MQ137_DO 45
+float currentNH3 = 0.0f;
+float currentMQ137V = 0.0f;
+bool  currentNH3Alert = false;
+float mq137Baseline = 0.0f;
+bool  mq137Warmed = false;
+unsigned long mq137WarmStart = 0;
+const unsigned long MQ137_WARMUP = 30000UL;
+
+int avgADC(int pin, int n = 10) {
+    long sum = 0;
+    for (int i = 0; i < n; i++) { sum += analogRead(pin); delay(2); }
+    return (int)(sum / n);
+}
+
+float readMQ137(float &V) {
+    int raw = avgADC(MQ137_AO);
+    V = (raw / 4095.0f) * 3.3f;
+    if (!mq137Warmed) {
+        if (millis() - mq137WarmStart >= MQ137_WARMUP) {
+            mq137Baseline = max(V, 0.10f);
+            mq137Warmed = true;
+        } else {
+            mq137Baseline = (mq137Baseline == 0) ? V
+                          : mq137Baseline * 0.95f + V * 0.05f;
+            return 0.0f;
+        }
+    }
+    if (V <= mq137Baseline) return 0.0f;
+    float r = (V - mq137Baseline) / (3.3f - mq137Baseline);
+    return constrain(r * 500.0f, 0.0f, 500.0f);
 }
 
 // I2C LCD Pins (Proven Default I2C Pins: SDA=17, SCL=18)
@@ -220,6 +257,12 @@ void setup() {
     pinMode(PIN_FLOW_SENSOR, INPUT);
     attachInterrupt(digitalPinToInterrupt(PIN_FLOW_SENSOR), flowPulseISR, RISING);
 
+    // Start MQ-137 Ammonia Gas Sensor (AO on GPIO 3, DO on GPIO 45)
+    pinMode(MQ137_AO, INPUT);
+    pinMode(MQ137_DO, INPUT);
+    analogReadResolution(12);
+    mq137WarmStart = millis();
+
     // Load Relay Thresholds
     loadRelayConfigs();
 
@@ -310,6 +353,13 @@ void loop() {
     if (millis() - lastSensor > 2000) {
         lastSensor = millis();
         readDHTSensor();
+
+        // Read MQ-137 Ammonia Sensor
+        float mqV = 0.0f;
+        currentNH3 = readMQ137(mqV);
+        currentMQ137V = mqV;
+        currentNH3Alert = (digitalRead(MQ137_DO) == LOW); // LOW = Gas alert triggered
+
         evaluateAutoRules();
     }
 
@@ -743,7 +793,7 @@ void drawHomeScreen() {
 
     if (millis() - lastHomeCycle > 5000) {
         lastHomeCycle = millis();
-        homePage = (homePage + 1) % 3;
+        homePage = (homePage + 1) % 4;
         if (lcdAvailable && pLcd != nullptr) pLcd->clear();
     }
 
@@ -813,7 +863,7 @@ void drawHomeScreen() {
         } else {
             pLcd->print(">AVG HUM :  --.- %   ");
         }
-    } else {
+    } else if (homePage == 2) {
         // --- PAGE 3: WATER FLOW (Rate, Total, Pulses - Display Only) ---
         pLcd->setCursor(0, 0);
         pLcd->print("=== WATER SENSOR ===");
@@ -831,6 +881,32 @@ void drawHomeScreen() {
         pLcd->setCursor(0, 3);
         char b3[21];
         snprintf(b3, sizeof(b3), " Pulse:  %-7lu    ", totalPulses);
+        pLcd->print(b3);
+    } else {
+        // --- PAGE 4: MQ-137 AMMONIA GAS SENSOR (PPM, Status, Voltage - Display Only) ---
+        pLcd->setCursor(0, 0);
+        pLcd->print("=== AMMONIA SENSOR =");
+
+        pLcd->setCursor(0, 1);
+        char b1[21];
+        if (!mq137Warmed) {
+            unsigned long rem = (MQ137_WARMUP > (millis() - mq137WarmStart)) ? (MQ137_WARMUP - (millis() - mq137WarmStart)) / 1000 : 0;
+            snprintf(b1, sizeof(b1), " Status: WARMING %2lus", rem);
+        } else if (currentNH3Alert) {
+            snprintf(b1, sizeof(b1), " Status: GAS ALERT! ");
+        } else {
+            snprintf(b1, sizeof(b1), " Status: NORMAL     ");
+        }
+        pLcd->print(b1);
+
+        pLcd->setCursor(0, 2);
+        char b2[21];
+        snprintf(b2, sizeof(b2), " NH3   : %5.1f ppm  ", currentNH3);
+        pLcd->print(b2);
+
+        pLcd->setCursor(0, 3);
+        char b3[21];
+        snprintf(b3, sizeof(b3), " Volt  : %4.2fV  D:%s ", currentMQ137V, currentNH3Alert ? "ACT" : "OK ");
         pLcd->print(b3);
     }
 }
@@ -1292,6 +1368,10 @@ void handleGetStatus() {
     json += "\"flowRate\":" + String(flowRate, 1) + ",";
     json += "\"totalLiters\":" + String(totalLiters, 1) + ",";
     json += "\"flowPulses\":" + String(totalPulses) + ",";
+    json += "\"nh3\":" + String(currentNH3, 1) + ",";
+    json += "\"nh3V\":" + String(currentMQ137V, 2) + ",";
+    json += "\"nh3Alert\":" + String(currentNH3Alert ? "true" : "false") + ",";
+    json += "\"nh3Warmed\":" + String(mq137Warmed ? "true" : "false") + ",";
 
     json += "\"relays\":[";
     for (int i = 0; i < NUM_RELAYS; i++) {
@@ -1472,6 +1552,11 @@ void handleRoot() {
                 <div class="sensor-val" id="flowVal" style="color:#3b82f6;">0.0 L/m</div>
                 <span id="flowStatus" style="font-size:0.75rem; color:var(--text-dim);">Total: 0.0 L | 0 Pulses</span>
             </div>
+            <div class="sensor-card">
+                <div class="sensor-label">☣️ Ammonia NH3 (GPIO 3/45)</div>
+                <div class="sensor-val" id="nh3Val" style="color:#eab308;">0.0 ppm</div>
+                <span id="nh3Status" style="font-size:0.75rem; color:var(--text-dim);">Status: Warming | 0.00V</span>
+            </div>
         </div>
 
         <!-- Hardware Status -->
@@ -1625,6 +1710,21 @@ void handleRoot() {
             if(d.flowRate !== undefined) {
                 document.getElementById('flowVal').innerText = d.flowRate + ' L/m';
                 document.getElementById('flowStatus').innerText = `Total: ${d.totalLiters} L | ${d.flowPulses} Pulses`;
+            }
+
+            if(d.nh3 !== undefined) {
+                document.getElementById('nh3Val').innerText = d.nh3 + ' ppm';
+                const elNh3 = document.getElementById('nh3Status');
+                if(!d.nh3Warmed) {
+                    elNh3.innerText = `Status: Warming Up | ${d.nh3V}V`;
+                    elNh3.style.color = '#eab308';
+                } else if(d.nh3Alert) {
+                    elNh3.innerText = `Status: ⚠️ GAS ALERT! | ${d.nh3V}V`;
+                    elNh3.style.color = '#ef4444';
+                } else {
+                    elNh3.innerText = `Status: ✅ Clean/Normal | ${d.nh3V}V`;
+                    elNh3.style.color = '#22c55e';
+                }
             }
 
             if(d.lcdStatus) {
