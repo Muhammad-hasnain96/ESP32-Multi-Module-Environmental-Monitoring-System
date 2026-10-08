@@ -22,14 +22,14 @@
 | **Relay 06** | Module 1 (8-Channel) | `IN6` | **`GPIO 16`** | `RELAY_PINS[5]` | Active-LOW (`LOW` = ON) | `COM6` / `NO6` |
 | **Relay 07** | Module 1 (8-Channel) | `IN7` | **`GPIO 21`** | `RELAY_PINS[6]` | Active-LOW (`LOW` = ON) | `COM7` / `NO7` |
 | **Relay 08** | Module 1 (8-Channel) | `IN8` | **`GPIO 47`** | `RELAY_PINS[7]` | Active-LOW (`LOW` = ON) | `COM8` / `NO8` |
-| **Relay 09** | Module 2 (4-Channel) | `IN1` | **`GPIO 1`** | `RELAY_PINS[8]` | Active-LOW (`LOW` = ON) | `COM1` / `NO1` |
-| **Relay 10** | Module 2 (4-Channel) | `IN2` | **`GPIO 2`** | `RELAY_PINS[9]` | Active-LOW (`LOW` = ON) | `COM2` / `NO2` |
-| **Relay 11** | Module 2 (4-Channel) | `IN3` | **`GPIO 9`** | `RELAY_PINS[10]` | Active-LOW (`LOW` = ON) | `COM3` / `NO3` |
-| **Relay 12** | Module 2 (4-Channel) | `IN4` | **`GPIO 10`** | `RELAY_PINS[11]` | Active-LOW (`LOW` = ON) | `COM4` / `NO4` |
-| **Relay 13** | Module 3 (4-Channel) | `IN1` | **`GPIO 11`** | `RELAY_PINS[12]` | Active-LOW (`LOW` = ON) | `COM1` / `NO1` |
-| **Relay 14** | Module 3 (4-Channel) | `IN2` | **`GPIO 12`** | `RELAY_PINS[13]` | Active-LOW (`LOW` = ON) | `COM2` / `NO2` |
-| **Relay 15** | Module 3 (4-Channel) | `IN3` | **`GPIO 13`** | `RELAY_PINS[14]` | Active-LOW (`LOW` = ON) | `COM3` / `NO3` |
-| **Relay 16** | Module 3 (4-Channel) | `IN4` | **`GPIO 14`** | `RELAY_PINS[15]` | Active-LOW (`LOW` = ON) | `COM4` / `NO4` |
+| **Relay 09** | Module 2 (8-Channel) | `IN1` | **`GPIO 1`** | `RELAY_PINS[8]` | Active-LOW (`LOW` = ON) | `COM1` / `NO1` |
+| **Relay 10** | Module 2 (8-Channel) | `IN2` | **`GPIO 2`** | `RELAY_PINS[9]` | Active-LOW (`LOW` = ON) | `COM2` / `NO2` |
+| **Relay 11** | Module 2 (8-Channel) | `IN3` | **`GPIO 9`** | `RELAY_PINS[10]` | Active-LOW (`LOW` = ON) | `COM3` / `NO3` |
+| **Relay 12** | Module 2 (8-Channel) | `IN4` | **`GPIO 10`** | `RELAY_PINS[11]` | Active-LOW (`LOW` = ON) | `COM4` / `NO4` |
+| **Relay 13** | Module 2 (8-Channel) | `IN5` | **`GPIO 11`** | `RELAY_PINS[12]` | Active-LOW (`LOW` = ON) | `COM5` / `NO5` |
+| **Relay 14** | Module 2 (8-Channel) | `IN6` | **`GPIO 12`** | `RELAY_PINS[13]` | Active-LOW (`LOW` = ON) | `COM6` / `NO6` |
+| **Relay 15** | Module 2 (8-Channel) | `IN7` | **`GPIO 13`** | `RELAY_PINS[14]` | Active-LOW (`LOW` = ON) | `COM7` / `NO7` |
+| **Relay 16** | Module 2 (8-Channel) | `IN8` | **`GPIO 14`** | `RELAY_PINS[15]` | Active-LOW (`LOW` = ON) | `COM8` / `NO8` |
 
 ---
 

@@ -6,9 +6,8 @@
  * 
  * Hardware:
  * - ESP32-S3 DevKitC-1
- * - Module 1 (8-ch Relay): GPIO 4, 5, 6, 7, 15, 16, 21, 47
- * - Module 2 (4-ch Relay): GPIO 1, 2, 9, 10
- * - Module 3 (4-ch Relay): GPIO 11, 12, 13, 14
+ * - Module 1 (8-ch Relay): GPIO 4, 5, 6, 7, 15, 16, 21, 47 (Relays 1-8: IN1-IN8)
+ * - Module 2 (8-ch Relay): GPIO 1, 2, 9, 10, 11, 12, 13, 14 (Relays 9-16: IN1-IN8)
  * - DHT11 Sensors (x3 Multi-Zone / Average):
  *   Sensor 1 (T1): GPIO 8
  *   Sensor 2 (T2): GPIO 48
@@ -40,9 +39,9 @@
 // --- HARDWARE PINS ---
 const int NUM_RELAYS = 16;
 const int RELAY_PINS[NUM_RELAYS] = {
-    4, 5, 6, 7, 15, 16, 21, 47,    // Module 1 (Relays 1-8: R7 on GPIO 21, R8 on GPIO 47)
-    1, 2, 9, 10,                   // Module 2 (Relays 9-12)
-    11, 12, 13, 14                 // Module 3 (Relays 13-16)
+    4, 5, 6, 7, 15, 16, 21, 47,    // Module 1 (8-ch Relay Board #1: IN1-IN8 -> Relays 1-8)
+    1, 2, 9, 10,                   // Module 2 (8-ch Relay Board #2: IN1-IN4 -> Relays 9-12)
+    11, 12, 13, 14                 // Module 2 (8-ch Relay Board #2: IN5-IN8 -> Relays 13-16)
 };
 
 // 3x DHT11 Sensors (T1 on GPIO 8, T2 on GPIO 48, T3 on GPIO 42)
@@ -321,9 +320,9 @@ void setup() {
 void loop() {
     server.handleClient();
 
-    // Fast, non-blocking check for LCD (0x27 or 0x3F) every 4 seconds if not yet connected
+    // Fast, non-blocking check for LCD (0x27 or 0x3F) every 10 seconds if not yet connected
     static unsigned long lastI2CRetry = 0;
-    if (!lcdAvailable && millis() - lastI2CRetry > 4000) {
+    if (!lcdAvailable && millis() - lastI2CRetry > 10000) {
         lastI2CRetry = millis();
         initLCD();
     }
@@ -386,12 +385,11 @@ void loop() {
 // --- PROVEN BATTLE-TESTED LCD INITIALIZER ---
 
 void initLCD() {
-    delay(100);
     pinMode(I2C_SDA, INPUT_PULLUP);
     pinMode(I2C_SCL, INPUT_PULLUP);
     Wire.setPins(I2C_SDA, I2C_SCL);
     Wire.begin(I2C_SDA, I2C_SCL, 50000); // 50kHz for rock-solid stability over jumper wires
-    Wire.setTimeOut(50);
+    Wire.setTimeOut(30);
 
     byte lcdAddr = 0;
     Wire.beginTransmission(0x27);
@@ -1241,7 +1239,6 @@ void turnAll(bool state) {
     for (int i = 0; i < NUM_RELAYS; i++) {
         configs[i].mode = 0;
         setRelay(i, state, state ? "Manual Master ON" : "Manual Master OFF");
-        delay(40);
     }
 }
 
@@ -1284,9 +1281,7 @@ void loadRelayConfigs() {
         String keyA = "a" + String(i);
 
         int m = prefRelay.getInt(keyM.c_str(), 1);
-        if (m == 0) m = 1; // Default/Reset to Auto Temp mode so conditions are active!
         configs[i].mode   = m;
-        prefRelay.putInt(keyM.c_str(), m);
 
         configs[i].minVal = prefRelay.getFloat(keyMin.c_str(), defaultMins[i]);
         configs[i].maxVal = prefRelay.getFloat(keyMax.c_str(), defaultMaxs[i]);
@@ -1665,8 +1660,7 @@ void handleRoot() {
 
         for(let i = 1; i <= 16; i++) {
             if(i === 1) container.innerHTML += `<div class="mod-header">📦 Module 1 (8-ch Relay Board: R1 - R8)</div>`;
-            if(i === 9) container.innerHTML += `<div class="mod-header">📦 Module 2 (4-ch Relay Board: R9 - R12)</div>`;
-            if(i === 13) container.innerHTML += `<div class="mod-header">📦 Module 3 (4-ch Relay Board: R13 - R16)</div>`;
+            if(i === 9) container.innerHTML += `<div class="mod-header">📦 Module 2 (8-ch Relay Board: R9 - R16)</div>`;
 
             const card = document.createElement('div');
             card.className = 'relay-item';
@@ -1836,6 +1830,24 @@ void handleRoot() {
         }
 
         function toggleRelay(id, state) {
+            const card = document.getElementById('rCard' + id);
+            const badge = document.getElementById('rBadge' + id);
+            const sw = document.getElementById('rSwitch' + id);
+            const reason = document.getElementById('rReason' + id);
+            if(card && badge && sw) {
+                if(state) {
+                    card.classList.add('active');
+                    badge.className = 'state-badge state-on';
+                    badge.innerText = 'ON';
+                    sw.checked = true;
+                } else {
+                    card.classList.remove('active');
+                    badge.className = 'state-badge state-off';
+                    badge.innerText = 'OFF';
+                    sw.checked = false;
+                }
+                if(reason) reason.innerText = 'Manual Web Toggle';
+            }
             fetch(`/toggle?id=${id}&state=${state ? 1 : 0}`).then(fetchStatus);
         }
 
@@ -1844,6 +1856,26 @@ void handleRoot() {
         }
 
         function setAll(state) {
+            for(let i = 1; i <= 16; i++) {
+                const card = document.getElementById('rCard' + i);
+                const badge = document.getElementById('rBadge' + i);
+                const sw = document.getElementById('rSwitch' + i);
+                const reason = document.getElementById('rReason' + i);
+                if(card && badge && sw) {
+                    if(state === 1) {
+                        card.classList.add('active');
+                        badge.className = 'state-badge state-on';
+                        badge.innerText = 'ON';
+                        sw.checked = true;
+                    } else {
+                        card.classList.remove('active');
+                        badge.className = 'state-badge state-off';
+                        badge.innerText = 'OFF';
+                        sw.checked = false;
+                    }
+                    if(reason) reason.innerText = (state === 1) ? 'Manual Master ON' : 'Manual Master OFF';
+                }
+            }
             fetch(`/all?state=${state}`).then(fetchStatus);
         }
 

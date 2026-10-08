@@ -17,14 +17,14 @@ A comprehensive, production-grade 16-channel automation hub powered by the **ESP
 | **Relay 06** | Module 1 (8-Ch) | `IN6` | **`GPIO 16`** | Header 1 |
 | **Relay 07** | Module 1 (8-Ch) | `IN7` | **`GPIO 21`** | Header 2 (Safe Non-PSRAM) |
 | **Relay 08** | Module 1 (8-Ch) | `IN8` | **`GPIO 47`** | Header 2 (Output Capable) |
-| **Relay 09** | Module 2 (4-Ch) | `IN1` | **`GPIO 1`** | Header 1 |
-| **Relay 10** | Module 2 (4-Ch) | `IN2` | **`GPIO 2`** | Header 1 |
-| **Relay 11** | Module 2 (4-Ch) | `IN3` | **`GPIO 9`** | Header 1 |
-| **Relay 12** | Module 2 (4-Ch) | `IN4` | **`GPIO 10`** | Header 1 |
-| **Relay 13** | Module 3 (4-Ch) | `IN1` | **`GPIO 11`** | Header 1 |
-| **Relay 14** | Module 3 (4-Ch) | `IN2` | **`GPIO 12`** | Header 1 |
-| **Relay 15** | Module 3 (4-Ch) | `IN3` | **`GPIO 13`** | Header 1 |
-| **Relay 16** | Module 3 (4-Ch) | `IN4` | **`GPIO 14`** | Header 1 |
+| **Relay 09** | Module 2 (8-Ch) | `IN1` | **`GPIO 1`** | Header 1 |
+| **Relay 10** | Module 2 (8-Ch) | `IN2` | **`GPIO 2`** | Header 1 |
+| **Relay 11** | Module 2 (8-Ch) | `IN3` | **`GPIO 9`** | Header 1 |
+| **Relay 12** | Module 2 (8-Ch) | `IN4` | **`GPIO 10`** | Header 1 |
+| **Relay 13** | Module 2 (8-Ch) | `IN5` | **`GPIO 11`** | Header 1 |
+| **Relay 14** | Module 2 (8-Ch) | `IN6` | **`GPIO 12`** | Header 1 |
+| **Relay 15** | Module 2 (8-Ch) | `IN7` | **`GPIO 13`** | Header 1 |
+| **Relay 16** | Module 2 (8-Ch) | `IN8` | **`GPIO 14`** | Header 1 |
 
 ### 📟 2004 I2C LCD Display (Address `0x27` / `0x3F`)
 | LCD Pin | ESP32-S3 Pin | Notes |
