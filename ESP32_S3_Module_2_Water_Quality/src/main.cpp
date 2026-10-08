@@ -170,9 +170,40 @@ const char* shortTdsLabel(float tds) {
 }
 
 // =====================================================================
-//  Analog TDS Reader (30-Sample Median Noise Filter + Temp Compensation)
+//  Analog Pin Open-Circuit / Floating Pin Detector
 // =====================================================================
-float readTDS(float currentTempC, float &outVoltage, int &outRawADC) {
+bool isAnalogSensorConnected(int pin) {
+    // Active discharge test for open-circuit detection:
+    // Driving the pin LOW as an OUTPUT drains all floating static charge.
+    // If the pin is open/unconnected, it has no driving source and remains near 0 (< 300 ADC).
+    // An actively connected sensor (op-amp output) instantly re-drives the pin to its operating voltage.
+    gpio_reset_pin((gpio_num_t)pin);
+    pinMode(pin, OUTPUT);
+    digitalWrite(pin, LOW);
+    delay(10);
+    pinMode(pin, INPUT);
+    delay(3);
+
+    int discharged = analogRead(pin);
+
+    if (discharged < 350) {
+        return false; // Disconnected / Floating open pin
+    }
+    return true; // Actively driven by real sensor
+}
+
+// =====================================================================
+//  Analog TDS Reader (30-Sample Median Noise Filter + Disconnect Check)
+// =====================================================================
+float readTDS(float currentTempC, float &outVoltage, int &outRawADC, bool &outConnected) {
+    // 1. Check if TDS sensor board is physically connected
+    if (!isAnalogSensorConnected(TDS_PIN)) {
+        outConnected = false;
+        outVoltage = 0.0f;
+        outRawADC = 0;
+        return 0.0f;
+    }
+
     const int SAMPLES = 30;
     int buffer[SAMPLES];
 
@@ -198,7 +229,14 @@ float readTDS(float currentTempC, float &outVoltage, int &outRawADC) {
     outRawADC = (int)(sum / 10);
     outVoltage = (outRawADC / ADC_RESOLUTION) * VREF;
 
-    // Check for dry probe in air or disconnected probe
+    if (outVoltage < 0.08f) {
+        outConnected = false;
+        return 0.0f;
+    }
+
+    outConnected = true;
+
+    // Check for dry probe in air (TDS module is plugged in, but probe is out of water)
     if (outVoltage <= TDS_DRY_VOLTAGE_THRESHOLD) {
         return 0.0f;
     }
@@ -219,9 +257,17 @@ float readTDS(float currentTempC, float &outVoltage, int &outRawADC) {
 }
 
 // =====================================================================
-//  Analog pH Reader (30-Sample Median Noise Filter)
+//  Analog pH Reader (30-Sample Median Noise Filter + Disconnect Check)
 // =====================================================================
-float readPH(float &outVoltage, int &outRawADC) {
+float readPH(float &outVoltage, int &outRawADC, bool &outConnected) {
+    // 1. Check if pH sensor board is physically connected
+    if (!isAnalogSensorConnected(PH_PIN)) {
+        outConnected = false;
+        outVoltage = 0.0f;
+        outRawADC = 0;
+        return 0.0f;
+    }
+
     const int SAMPLES = 30;
     int buffer[SAMPLES];
 
@@ -247,6 +293,12 @@ float readPH(float &outVoltage, int &outRawADC) {
     outRawADC = (int)(sum / 10);
     outVoltage = (outRawADC / ADC_RESOLUTION) * VREF;
 
+    if (outVoltage < 0.25f || outVoltage > 3.05f) {
+        outConnected = false;
+        return 0.0f;
+    }
+
+    outConnected = true;
     float calculatedPH = 7.0f - (outVoltage - PH_NEUTRAL_V) * PH_SLOPE;
     return constrain(calculatedPH, 0.0f, 14.0f);
 }
@@ -269,11 +321,11 @@ void connectWiFi() {
 // =====================================================================
 //  ThingsBoard Telemetry Dispatch (Module 2: Complete Telemetry Keys)
 // =====================================================================
-void sendTelemetry(float tC, float tF, float hum, float hi,
-                   float tds, float tdsV, const char* quality,
+void sendTelemetry(bool dhtOK, float tC, float tF, float hum, float hi,
+                   bool tdsOK, float tds, float tdsV, const char* quality,
                    float flowRateLMin, float flowRateMLSec, float flowHz,
                    float volTotal, unsigned long pulses, const char* flowStatus,
-                   float ph, float phV, const char* phStatus) {
+                   bool phOK, float ph, float phV, const char* phStatus) {
     if (WiFi.status() != WL_CONNECTED) {
         Serial.println(F(" Skipped (WiFi offline)"));
         return;
@@ -287,24 +339,60 @@ void sendTelemetry(float tC, float tF, float hum, float hi,
     }
     https.addHeader("Content-Type", "application/json");
     
-    // JSON Payload (With all aliases for versatile widget compatibility)
+    // JSON Payload (Connected sensors send real values; disconnected sensors send "OFF")
     String p = "{";
-    // DHT11 (Dedicated Module 2 keys — Never overwrites Module 1)
-    p += "\"m2_temperature\":"    + String(tC, 1);
-    p += ",\"m2_temperatureF\":"  + String(tF, 1);
-    p += ",\"m2_humidity\":"      + String(hum, 1);
-    p += ",\"m2_heatIndex\":"     + String(hi, 1);
-    p += ",\"m2_temp\":"          + String(tC, 1);
-    p += ",\"m2_hum\":"           + String(hum, 1);
-    p += ",\"water_temp\":"       + String(tC, 1);
-    p += ",\"water_humidity\":"   + String(hum, 1);
-    // TDS Meter
-    p += ",\"tdsPPM\":"            + String(tds, 1);
-    p += ",\"tdsValue\":"          + String(tds, 1);
-    p += ",\"tdsVoltage\":"        + String(tdsV, 3);
-    p += ",\"waterQuality\":\""     + String(quality) + "\"";
-    p += ",\"tdsStatus\":\""       + String(quality) + "\"";
-    // Flow Sensor
+
+    // 1. DHT11 Ambient Temperature & Humidity
+    if (dhtOK) {
+        p += "\"m2_temperature\":"    + String(tC, 1);
+        p += ",\"m2_temperatureF\":"  + String(tF, 1);
+        p += ",\"m2_humidity\":"      + String(hum, 1);
+        p += ",\"m2_heatIndex\":"     + String(hi, 1);
+        p += ",\"temperature\":"      + String(tC, 1);
+        p += ",\"temperatureF\":"     + String(tF, 1);
+        p += ",\"temp\":"             + String(tC, 1);
+        p += ",\"tempF\":"            + String(tF, 1);
+        p += ",\"humidity\":"         + String(hum, 1);
+        p += ",\"heatIndex\":"        + String(hi, 1);
+        p += ",\"heat_index\":"       + String(hi, 1);
+        p += ",\"m2_temp\":"          + String(tC, 1);
+        p += ",\"m2_hum\":"           + String(hum, 1);
+        p += ",\"water_temp\":"       + String(tC, 1);
+        p += ",\"water_humidity\":"   + String(hum, 1);
+    } else {
+        p += "\"m2_temperature\":\"OFF\"";
+        p += ",\"m2_temperatureF\":\"OFF\"";
+        p += ",\"m2_humidity\":\"OFF\"";
+        p += ",\"m2_heatIndex\":\"OFF\"";
+        p += ",\"temperature\":\"OFF\"";
+        p += ",\"temperatureF\":\"OFF\"";
+        p += ",\"temp\":\"OFF\"";
+        p += ",\"tempF\":\"OFF\"";
+        p += ",\"humidity\":\"OFF\"";
+        p += ",\"heatIndex\":\"OFF\"";
+        p += ",\"heat_index\":\"OFF\"";
+        p += ",\"m2_temp\":\"OFF\"";
+        p += ",\"m2_hum\":\"OFF\"";
+        p += ",\"water_temp\":\"OFF\"";
+        p += ",\"water_humidity\":\"OFF\"";
+    }
+
+    // 2. TDS Meter
+    if (tdsOK) {
+        p += ",\"tdsPPM\":"            + String(tds, 1);
+        p += ",\"tdsValue\":"          + String(tds, 1);
+        p += ",\"tdsVoltage\":"        + String(tdsV, 3);
+        p += ",\"waterQuality\":\""     + String(quality) + "\"";
+        p += ",\"tdsStatus\":\""       + String(quality) + "\"";
+    } else {
+        p += ",\"tdsPPM\":\"OFF\"";
+        p += ",\"tdsValue\":\"OFF\"";
+        p += ",\"tdsVoltage\":\"OFF\"";
+        p += ",\"waterQuality\":\"OFF\"";
+        p += ",\"tdsStatus\":\"OFF\"";
+    }
+
+    // 3. Water Flow Sensor (Connected & Active)
     p += ",\"flowRateLMin\":"      + String(flowRateLMin, 2);
     p += ",\"flowRate\":"          + String(flowRateLMin, 2);
     p += ",\"flowRateMLSec\":"     + String(flowRateMLSec, 1);
@@ -313,12 +401,27 @@ void sendTelemetry(float tC, float tF, float hum, float hi,
     p += ",\"totalLitres\":"       + String(volTotal, 3);
     p += ",\"flowPulses\":"        + String(pulses);
     p += ",\"flowStatus\":\""       + String(flowStatus) + "\"";
-    // pH Sensor
-    p += ",\"phValue\":"           + String(ph, 2);
-    p += ",\"phVoltage\":"         + String(phV, 3);
-    p += ",\"phStatus\":\""        + String(phStatus) + "\"";
-    p += ",\"m2_phValue\":"        + String(ph, 2);
-    p += ",\"m2_phStatus\":\""     + String(phStatus) + "\"";
+
+    // 4. pH Sensor
+    if (phOK) {
+        p += ",\"phValue\":"           + String(ph, 2);
+        p += ",\"phVoltage\":"         + String(phV, 3);
+        p += ",\"phStatus\":\""        + String(phStatus) + "\"";
+        p += ",\"m2_phValue\":"        + String(ph, 2);
+        p += ",\"m2_phStatus\":\""     + String(phStatus) + "\"";
+        p += ",\"water_status\":\""    + String(phStatus) + "\"";
+        p += ",\"Water-status\":\""    + String(phStatus) + "\"";
+        p += ",\"waterStatus\":\""     + String(phStatus) + "\"";
+    } else {
+        p += ",\"phValue\":\"OFF\"";
+        p += ",\"phVoltage\":\"OFF\"";
+        p += ",\"phStatus\":\"OFF\"";
+        p += ",\"m2_phValue\":\"OFF\"";
+        p += ",\"m2_phStatus\":\"OFF\"";
+        p += ",\"water_status\":\"OFF\"";
+        p += ",\"Water-status\":\"OFF\"";
+        p += ",\"waterStatus\":\"OFF\"";
+    }
     p += "}";
 
     int code = https.POST(p);
@@ -453,18 +556,14 @@ void loop() {
     loopCount++;
 
     // -------------------------------------------------------------
-    // 1. Read DHT11 Temperature & Humidity
+    // -------------------------------------------------------------
+    // 1. Read DHT11 Temperature & Humidity (Check if connected)
     // -------------------------------------------------------------
     float hum  = dht.readHumidity();
     float tC   = dht.readTemperature();
     float tF   = dht.readTemperature(true);
-    bool  dhtOK = true;
-
-    if (isnan(hum) || isnan(tC)) {
-        hum = 50.0f; tC = 25.0f; tF = 77.0f;
-        dhtOK = false;
-    }
-    float hi = dht.computeHeatIndex(tC, hum, false);
+    bool  dhtOK = (!isnan(hum) && !isnan(tC) && hum > 0.05f);
+    float hi   = dhtOK ? dht.computeHeatIndex(tC, hum, false) : 0.0f;
 
     // -------------------------------------------------------------
     // 2. Read Water Flow Sensor (FS200A)
@@ -482,20 +581,22 @@ void loop() {
     const char* flowStatus = getFlowStatus(flowRateLMin);
 
     // -------------------------------------------------------------
-    // 3. Read Analog TDS Meter (Live DHT11 Temperature Compensation)
+    // 3. Read Analog TDS Meter (Check if connected)
     // -------------------------------------------------------------
     float tdsVoltage = 0.0f;
     int   tdsRawADC   = 0;
-    float tdsPPM     = readTDS(tC, tdsVoltage, tdsRawADC);
-    const char* qualityStr = getWaterQuality(tdsPPM);
+    bool  tdsOK       = false;
+    float tdsPPM     = readTDS(tC, tdsVoltage, tdsRawADC, tdsOK);
+    const char* qualityStr = tdsOK ? getWaterQuality(tdsPPM) : "OFF";
 
     // -------------------------------------------------------------
-    // 4. Read E-201-C BNC pH Sensor
+    // 4. Read E-201-C BNC pH Sensor (Check if connected)
     // -------------------------------------------------------------
     float phVoltage = 0.0f;
     int   phRawADC = 0;
-    float phValue = readPH(phVoltage, phRawADC);
-    const char* phStatus = getPhStatus(phValue);
+    bool  phOK     = false;
+    float phValue  = readPH(phVoltage, phRawADC, phOK);
+    const char* phStatus = phOK ? getPhStatus(phValue) : "OFF";
 
     // =============================================================
     //  Professional Serial Dashboard
@@ -515,26 +616,34 @@ void loop() {
         Serial.printf("    Humidity     :  %5.1f %%\n", hum);
         Serial.printf("    Heat Index   :  %5.1f C\n", hi);
     } else {
-        Serial.println(F("    [WARNING] DHT11 read failed, using 25.0C fallback."));
+        Serial.println(F("    Status       :  [OFFLINE / NOT CONNECTED]"));
     }
     printLine();
 
     // Section 2: TDS Water Quality
     Serial.println(F("  WATER QUALITY  [Analog TDS Meter - GPIO 1 (ADC1_CH0)]"));
     printLine();
-    Serial.printf("    TDS Value    :  %6.1f ppm   [%s]\n", tdsPPM, qualityStr);
-    Serial.printf("    Sensor Volt  :  %6.3f V    (Raw ADC: %4d)\n", tdsVoltage, tdsRawADC);
+    if (tdsOK) {
+        Serial.printf("    TDS Value    :  %6.1f ppm   [%s]\n", tdsPPM, qualityStr);
+        Serial.printf("    Sensor Volt  :  %6.3f V    (Raw ADC: %4d)\n", tdsVoltage, tdsRawADC);
+    } else {
+        Serial.println(F("    Status       :  [OFFLINE / NOT CONNECTED]"));
+    }
     printLine();
 
     // Section 3: pH Measurement
     Serial.println(F("  WATER pH LEVEL  [E-201-C BNC - GPIO 2 (ADC1_CH1)]"));
     printLine();
-    Serial.printf("    pH Value     :  %6.2f       [%s]\n", phValue, phStatus);
-    Serial.printf("    Sensor Volt  :  %6.3f V    (Raw ADC: %4d)\n", phVoltage, phRawADC);
+    if (phOK) {
+        Serial.printf("    pH Value     :  %6.2f       [%s]\n", phValue, phStatus);
+        Serial.printf("    Sensor Volt  :  %6.3f V    (Raw ADC: %4d)\n", phVoltage, phRawADC);
+    } else {
+        Serial.println(F("    Status       :  [OFFLINE / NOT CONNECTED]"));
+    }
     printLine();
 
     // Section 4: Water Flow Sensor
-    Serial.println(F("  WATER FLOW MONITOR  [FS200A / YF-S201 - GPIO 5]"));
+    Serial.println(F("  WATER FLOW MONITOR  [FS200A / YF-S201 - GPIO 5]  [ONLINE]"));
     printLine();
     Serial.printf("    Flow Rate    :  %6.2f L/min   (%5.1f mL/sec)\n", flowRateLMin, flowRateMLSec);
     Serial.printf("    Frequency    :  %6.2f Hz      (%lu pulses in %1.1fs)\n", flowHz, pulses, elapsedSec);
@@ -543,12 +652,12 @@ void loop() {
     printLine();
 
     // Section 5: Cloud Telemetry
-    Serial.print(F("  CLOUD -> ThingsBoard Telemetry (All Keys) ..."));
-    sendTelemetry(tC, tF, hum, hi,
-                  tdsPPM, tdsVoltage, qualityStr,
+    Serial.print(F("  CLOUD -> ThingsBoard Telemetry (Live Flow + Connected Sensors) ..."));
+    sendTelemetry(dhtOK, tC, tF, hum, hi,
+                  tdsOK, tdsPPM, tdsVoltage, qualityStr,
                   flowRateLMin, flowRateMLSec, flowHz,
                   totalLiters, pulses, flowStatus,
-                  phValue, phVoltage, phStatus);
+                  phOK, phValue, phVoltage, phStatus);
 
     printLine('=');
 
@@ -566,18 +675,22 @@ void loop() {
             if (dhtOK) {
                 snprintf(buf, sizeof(buf), "Temp    : %5.1f C   ", tC);
             } else {
-                snprintf(buf, sizeof(buf), "Temp    :  --.- C   ");
+                snprintf(buf, sizeof(buf), "Temp    :  OFF      ");
             }
             lcd.setCursor(0, 1); lcd.print(buf);
 
             if (dhtOK) {
                 snprintf(buf, sizeof(buf), "Humidity: %5.1f %%   ", hum);
             } else {
-                snprintf(buf, sizeof(buf), "Humidity:  --.- %%   ");
+                snprintf(buf, sizeof(buf), "Humidity:  OFF      ");
             }
             lcd.setCursor(0, 2); lcd.print(buf);
 
-            snprintf(buf, sizeof(buf), "pH : %-4.2f [%-7s] ", phValue, shortPhLabel(phValue));
+            if (phOK) {
+                snprintf(buf, sizeof(buf), "pH : %-4.2f [%-7s] ", phValue, shortPhLabel(phValue));
+            } else {
+                snprintf(buf, sizeof(buf), "pH : OFF / DISCONN  ");
+            }
             lcd.setCursor(0, 3); lcd.print(buf);
         } 
         else {
@@ -585,7 +698,11 @@ void loop() {
             snprintf(buf, sizeof(buf), "-- TDS & FLOW [2/2]-");
             lcd.setCursor(0, 0); lcd.print(buf);
 
-            snprintf(buf, sizeof(buf), "TDS : %4.0fppm [%-4s]", tdsPPM, shortTdsLabel(tdsPPM));
+            if (tdsOK) {
+                snprintf(buf, sizeof(buf), "TDS : %4.0fppm [%-4s]", tdsPPM, shortTdsLabel(tdsPPM));
+            } else {
+                snprintf(buf, sizeof(buf), "TDS : OFF / DISCONN ");
+            }
             lcd.setCursor(0, 1); lcd.print(buf);
 
             snprintf(buf, sizeof(buf), "Flow : %5.1f L/min  ", flowRateLMin);
