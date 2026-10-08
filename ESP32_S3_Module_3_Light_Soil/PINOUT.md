@@ -7,10 +7,10 @@
 | **DHT11** | `DATA` | **`GPIO 4`** | `3.3V` / `5V` | Ambient Temperature (°C/°F) & Humidity (%) |
 | | `VCC` | `3.3V` / `5V` | — | Power |
 | | `GND` | `GND` | — | Ground |
-| **BH1750 Light Sensor** | `SDA` | **`GPIO 15`** | `3.3V` | `Wire1` I2C Data bus |
+| **BH1750 Light Sensor** | `SDA` | **`GPIO 5`** *(fallback: `GPIO 15`)* | `3.3V` / `5V` | `Wire1` I2C Data bus |
 | | `SCL` | **`GPIO 16`** | — | `Wire1` I2C Clock bus |
 | | `ADDR` | **`GND`** | — | Sets I2C address to `0x23` |
-| | `VCC` | `3.3V` | — | Power supply |
+| | `VCC` | `3.3V` / `5V` | — | Power supply |
 | | `GND` | `GND` | — | Ground |
 | **Capacitive Soil v2.0** | `AOUT` (Signal) | **`GPIO 1`** | `3.3V` | `ADC1_CH0` — Analog moisture level (0%–100%) |
 | | `VCC` | `3.3V` | — | Direct 3.3V linearity |
@@ -19,33 +19,11 @@
 | (20x4 Character Screen) | `SCL` | **`GPIO 18`** | — | Dedicated I2C Bus (`Wire`) |
 | | `VCC` | `5V (VIN)` | — | Power (5V required for crisp contrast & backlight) |
 | | `GND` | `GND` | — | Common Ground |
-| **4-Channel 5V Relay** | `IN1` | **`GPIO 7`** | — | Channel 1 Trigger (Active-LOW: `LOW`=ON, `HIGH`=OFF) |
-| (Optocoupler Isolated) | `IN2` | **`GPIO 6`** | — | Channel 2 Trigger (Active-LOW: `LOW`=ON, `HIGH`=OFF) |
-| | `IN3` | **`GPIO 5`** | — | Channel 3 Trigger (Active-LOW: `LOW`=ON, `HIGH`=OFF) |
-| | `IN4` | **`GPIO 8`** | — | Channel 4 Trigger (Active-LOW: `LOW`=ON, `HIGH`=OFF) |
-| | `VCC` | **`5V (VIN)`** | `5V` | Relay coils & optocoupler logic power |
-| | `GND` | **`GND`** | — | Common Ground with ESP32-S3 |
-
----
-
-## ⚡ Cooling Fan & Relay Output Wiring (Screw Terminals)
-
-Connect Relay Channel 1 screw terminals as an inline switch for the fan:
-```
-[External Fan Power (+)] --------> [ Relay Channel 1: COM (Common) ]
-                                   [ Relay Channel 1: NO (Normally Open) ] ------> [ Fan Red Wire (+) ]
-
-[External Fan Power (-)] --------------------------------------------------------> [ Fan Black Wire (-) ]
-```
-
-* **When Temp $\ge 30^\circ\text{C}$:** ESP32 pulls GPIO 7 `LOW` $\rightarrow$ Relay clicks and connects `COM` to `NO` $\rightarrow$ **Fan turns ON**.
-* **When Temp $< 28^\circ\text{C}$:** ESP32 pulls GPIO 7 `HIGH` $\rightarrow$ Relay opens $\rightarrow$ **Fan turns OFF**.
-* **Hysteresis Band (28°C – 30°C):** Prevents rapid on/off cycling around the threshold.
 
 ---
 
 ## ⚙️ Key Technical Features
-* **Active-LOW Optocoupler Isolation:** Prevents inductive EMF spikes from the fan motor from resetting the ESP32-S3.
-* **Direct Real Light Sensor Output (Raw Lux):** Native factory-calibrated illuminance values directly from the BH1750 sensor (no scaling factor).
+* **Smart I2C Bus Initialization:** Auto-detects BH1750 on `SDA = GPIO 5, SCL = GPIO 16` (and falls back to `GPIO 15` if needed) at addresses `0x23` and `0x5C`. Includes periodic background re-scan if reconnected.
+* **Direct Real Light Sensor Output (Raw Lux):** Native factory-calibrated illuminance values directly from the BH1750 sensor.
 * **Capacitive Corrosion-Free Probe:** Insulated PCB electrodes that do not corrode in soil.
-* **ThingsBoard Cloud:** Pushes 12 telemetry keys every 3 seconds over HTTPS (including `fan_status` and `relay_fan`).
+* **ThingsBoard Cloud:** Pushes real-time telemetry keys (`temperature`, `humidity`, `soil_moisture`, `light_lux`, `light_state`) over HTTPS.

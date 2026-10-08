@@ -1,5 +1,5 @@
 // =====================================================================
-// ESP32-S3 — MODULE 3: Light, Soil & Environmental System
+// ESP32-S3 — MODULE 3: Light, Soil Moisture & Environmental System
 // =====================================================================
 // SENSOR WIRING FOR ESP32-S3:
 //   1. DHT11 Sensor:
@@ -8,10 +8,10 @@
 //      - GND   -> GND
 //
 //   2. BH1750 Digital Light Sensor:
-//      - SDA   -> GPIO 15  (Wire1)
+//      - SDA   -> GPIO 5   (Wire1: User connection) [Also auto-detects GPIO 15]
 //      - SCL   -> GPIO 16  (Wire1)
-//      - ADDR  -> GND (Address: 0x23)
-//      - VCC   -> 3.3V
+//      - ADDR  -> GND (Address: 0x23) [or VCC for 0x5C]
+//      - VCC   -> 5V / 3.3V
 //      - GND   -> GND
 //
 //   3. Capacitive Soil Moisture Sensor v2.0:
@@ -24,21 +24,6 @@
 //      - SCL   -> GPIO 18  (Wire)
 //      - VCC   -> 5V (VIN)
 //      - GND   -> GND
-//
-//   5. 4-Channel 5V Relay Module (Fan & Actuator Control):
-//      - IN1   -> GPIO 7   (Active-LOW: LOW=ON, HIGH=OFF)
-//      - IN2   -> GPIO 6   (Active-LOW: LOW=ON, HIGH=OFF)
-//      - IN3   -> GPIO 5   (Active-LOW: LOW=ON, HIGH=OFF)
-//      - IN4   -> GPIO 8   (Active-LOW: LOW=ON, HIGH=OFF)
-//      - VCC   -> 5V (VIN)
-//      - GND   -> GND
-//      - All 4 Channels Turn ON at >=30°C, OFF at <28°C
-//
-//   [COMMENTED / OPTIONAL] 6. HX711 5kg Load Cell:
-//      - DT    -> GPIO 14
-//      - SCK   -> GPIO 12
-//      - VCC   -> 5V (VIN)
-//      - GND   -> GND
 // =====================================================================
 
 #include <Arduino.h>
@@ -46,7 +31,6 @@
 #include <DHT.h>
 #include <BH1750.h>
 #include <LiquidCrystal_I2C.h>
-// #include "HX711.h"
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
@@ -59,12 +43,15 @@
 DHT dht(DHTPIN, DHTTYPE);
 
 // =====================================================================
-//  2. BH1750 Configuration (Wire1: SDA=15, SCL=16)
+//  2. BH1750 Configuration (Wire1: SDA=5 / 15, SCL=16)
 // =====================================================================
-#define BH1750_SDA_PIN  15
-#define BH1750_SCL_PIN  16
+#define BH1750_DEFAULT_SDA 5
+#define BH1750_DEFAULT_SCL 16
 BH1750 lightMeter(0x23);
 bool bh1750_available = false;
+int activeBH1750_SDA = BH1750_DEFAULT_SDA;
+int activeBH1750_SCL = BH1750_DEFAULT_SCL;
+uint8_t activeBH1750_ADDR = 0x23;
 float currentLux = 0.0f;
 
 // =====================================================================
@@ -85,40 +72,6 @@ const int WATER_VALUE = 1350; // Pure water (100% moisture)
 #define LCD_SCL_PIN      18
 LiquidCrystal_I2C lcd(0x27, 20, 4);
 bool lcd_available = false;
-
-// =====================================================================
-//  5. 4-Channel 5V Relay Configuration (Active LOW)
-// =====================================================================
-#define RELAY_IN1_PIN         7   // Channel 1
-#define RELAY_IN2_PIN         6   // Channel 2
-#define RELAY_IN3_PIN         5   // Channel 3
-#define RELAY_IN4_PIN         8   // Channel 4
-
-#define RELAY_ON              LOW   // Optocoupler relay turns ON on LOW
-#define RELAY_OFF             HIGH  // Optocoupler relay turns OFF on HIGH
-
-// Temperature Hysteresis Thresholds
-const float TEMP_FAN_ON_THRESH  = 30.0f; // Turn ON when >= 30.0 °C
-const float TEMP_FAN_OFF_THRESH = 28.0f; // Turn OFF when < 28.0 °C
-bool fanState = false;                  // Current relay / fan operational state
-
-void setAllRelays(bool state) {
-    fanState = state;
-    uint8_t level = state ? RELAY_ON : RELAY_OFF;
-    digitalWrite(RELAY_IN1_PIN, level);
-    digitalWrite(RELAY_IN2_PIN, level);
-    digitalWrite(RELAY_IN3_PIN, level);
-    digitalWrite(RELAY_IN4_PIN, level);
-}
-
-// =====================================================================
-//  [COMMENTED] HX711 Load Cell Configuration
-// =====================================================================
-// #define HX711_DOUT_PIN  14
-// #define HX711_SCK_PIN   12
-// HX711 scale;
-// bool scale_available = false;
-// float scale_calibration_factor = 420.0f;
 
 // =====================================================================
 //  WiFi & ThingsBoard Configuration
@@ -193,6 +146,58 @@ const char* shortSoilStatus(float pct) {
 }
 
 // =====================================================================
+//  BH1750 Intelligent Bus Scanner & Initializer
+// =====================================================================
+bool tryBH1750Bus(int sda, int scl) {
+    pinMode(sda, INPUT_PULLUP);
+    pinMode(scl, INPUT_PULLUP);
+    Wire1.end();
+    delay(40);
+    Wire1.begin(sda, scl, 50000); // 50kHz for rock-solid communication over jumper wires
+    Wire1.setTimeOut(25);
+
+    // 1. Check Address 0x23 (ADDR connected to GND)
+    Wire1.beginTransmission(0x23);
+    if (Wire1.endTransmission() == 0) {
+        if (lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, 0x23, &Wire1)) {
+            activeBH1750_SDA = sda;
+            activeBH1750_SCL = scl;
+            activeBH1750_ADDR = 0x23;
+            bh1750_available = true;
+            Serial.printf("  [OK] BH1750 DETECTED at 0x23 on Wire1 (SDA=GPIO %d, SCL=GPIO %d)\n", sda, scl);
+            return true;
+        }
+    }
+
+    // 2. Check Address 0x5C (ADDR connected to VCC or floating)
+    Wire1.beginTransmission(0x5C);
+    if (Wire1.endTransmission() == 0) {
+        if (lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, 0x5C, &Wire1)) {
+            activeBH1750_SDA = sda;
+            activeBH1750_SCL = scl;
+            activeBH1750_ADDR = 0x5C;
+            bh1750_available = true;
+            Serial.printf("  [OK] BH1750 DETECTED at 0x5C on Wire1 (SDA=GPIO %d, SCL=GPIO %d)\n", sda, scl);
+            return true;
+        }
+    }
+
+    return false;
+}
+
+void initBH1750Sensor() {
+    // 1. First priority: Check User Wiring (SDA = GPIO 5, SCL = GPIO 16)
+    if (tryBH1750Bus(5, 16)) return;
+
+    // 2. Fallback: Check alternative wiring (SDA = GPIO 15, SCL = GPIO 16)
+    if (tryBH1750Bus(15, 16)) return;
+
+    bh1750_available = false;
+    Serial.println(F("  [ERR] BH1750 Light Sensor NOT DETECTED on SDA=5 or SDA=15 (SCL=16)!"));
+    Serial.println(F("        Please check wiring: VCC=5V/3.3V, GND=GND, ADDR=GND, SDA=GPIO 5, SCL=GPIO 16"));
+}
+
+// =====================================================================
 //  Capacitive Soil Sensor Reading with Multi-Sample Filter
 // =====================================================================
 float readSoilMoisture(int &outRawADC, float &outVoltage) {
@@ -241,32 +246,30 @@ void connectWiFi() {
 }
 
 // =====================================================================
-//  ThingsBoard Telemetry Dispatch (Module 3: 12 Keys)
+//  ThingsBoard Telemetry Dispatch (Module 3: Ambient, Light & Soil)
 // =====================================================================
 void sendTelemetry(float tC, float tF, float hum, float hi,
                    float lux, const char* lightLv,
-                   float soilPct, float soilV, int soilADC, const char* soilLv,
-                   bool fanOn) {
+                   float soilPct, float soilV, int soilADC, const char* soilLv) {
     if (WiFi.status() != WL_CONNECTED) {
-        Serial.println(F(" Skipped (WiFi offline)"));
+        Serial.println(F(" [WiFi Offline - Skipped]"));
         return;
     }
-    String url = String(TB_HOST) + "/api/v1/" + TB_TOKEN + "/telemetry";
-    WiFiClientSecure client; client.setInsecure();
-    HTTPClient https; https.setTimeout(8000);
-    if (!https.begin(client, url)) {
-        Serial.println(F(" Error starting HTTPS"));
-        return;
-    }
+
+    WiFiClientSecure client;
+    client.setInsecure(); // Skip SSL cert check for testing
+    HTTPClient https;
+
+    String url = String(TB_HOST) + "/api/v1/" + String(TB_TOKEN) + "/telemetry";
+    https.begin(client, url);
     https.addHeader("Content-Type", "application/json");
 
-    // JSON Payload — Dedicated Module 3 keys (Never overwrites Module 1)
     String p = "{";
-    // DHT11 Ambient for Module 3
-    p += "\"m3_temperature\":"   + String(tC, 1);
-    p += ",\"m3_temperatureF\":" + String(tF, 1);
-    p += ",\"m3_humidity\":"     + String(hum, 1);
-    p += ",\"m3_heatIndex\":"    + String(hi, 1);
+    // DHT11
+    p += "\"temperature\":"     + String(tC, 1);
+    p += ",\"tempF\":"          + String(tF, 1);
+    p += ",\"humidity\":"       + String(hum, 1);
+    p += ",\"heatIndex\":"      + String(hi, 1);
     // BH1750 Light
     p += ",\"lux\":"           + String(lux, 1);
     p += ",\"lightLevel\":\""   + String(lightLv) + "\"";
@@ -277,13 +280,6 @@ void sendTelemetry(float tC, float tF, float hum, float hi,
     p += ",\"soilVoltage\":"   + String(soilV, 3);
     p += ",\"soilRawADC\":"    + String(soilADC);
     p += ",\"soilStatus\":\""   + String(soilLv) + "\"";
-    // 4-Channel Relays
-    p += ",\"fan_status\":\""   + String(fanOn ? "ON" : "OFF") + "\"";
-    p += ",\"relay_fan\":"      + String(fanOn ? "true" : "false");
-    p += ",\"relay_in1\":"      + String(fanOn ? "true" : "false");
-    p += ",\"relay_in2\":"      + String(fanOn ? "true" : "false");
-    p += ",\"relay_in3\":"      + String(fanOn ? "true" : "false");
-    p += ",\"relay_in4\":"      + String(fanOn ? "true" : "false");
     p += "}";
 
     int code = https.POST(p);
@@ -303,12 +299,11 @@ void setup() {
     delay(1000);
 
     printLine('=');
-    Serial.println(F("  ESP32-S3 — MODULE 3: COMPLETE LIGHT, SOIL & ENVIRONMENT"));
+    Serial.println(F("  ESP32-S3 — MODULE 3: LIGHT, SOIL & ENVIRONMENT MONITOR"));
     printLine('=');
-    Serial.println(F("  Sensors : DHT11 (GPIO 4) | BH1750 (Wire1: SDA=15, SCL=16) | Soil (GPIO 1)"));
-    Serial.println(F("  Actuator: 4-Ch Relays (IN1:7, IN2:6, IN3:5, IN4:8, ON>=30.0C, OFF<28.0C)"));
+    Serial.println(F("  Sensors : DHT11 (GPIO 4) | BH1750 (Wire1: SDA=5/15, SCL=16) | Soil (GPIO 1)"));
     Serial.println(F("  Display : 2004 I2C LCD (Wire: SDA=17, SCL=18)"));
-    Serial.println(F("  Cloud   : ThingsBoard"));
+    Serial.println(F("  Cloud   : ThingsBoard Telemetry"));
     printLine('=');
 
     // 1. Initialize DHT11
@@ -320,14 +315,6 @@ void setup() {
     analogSetAttenuation(ADC_11db); // 0 - 3.3V
     pinMode(SOIL_PIN, INPUT);
     Serial.println(F("  [OK] Soil Moisture Sensor on GPIO 1 (ADC1_CH0)"));
-
-    // 3. Initialize 4-Channel Relays (IN1=7, IN2=6, IN3=5, IN4=8 - Active LOW, default OFF)
-    pinMode(RELAY_IN1_PIN, OUTPUT);
-    pinMode(RELAY_IN2_PIN, OUTPUT);
-    pinMode(RELAY_IN3_PIN, OUTPUT);
-    pinMode(RELAY_IN4_PIN, OUTPUT);
-    setAllRelays(false);
-    Serial.println(F("  [OK] 4-Channel Relays on GPIO 7, 6, 5, 8 (Default OFF)"));
 
     // 3. Initialize 2004 I2C LCD on Dedicated Wire (SDA=17, SCL=18)
     delay(100); // Allow LCD power to stabilize
@@ -363,7 +350,7 @@ void setup() {
         lcd.print(F("===================="));
         lcd_available = true;
         Serial.printf("ONLINE at 0x%02X [OK]\n", lcdAddr);
-        delay(2500); // Show Welcome message clearly for 2.5 seconds
+        delay(2000); // Show Welcome message clearly
 
         // System Initialization Status
         lcd.clear();
@@ -379,20 +366,8 @@ void setup() {
         Serial.println(F("OFFLINE (Check SDA=17, SCL=18, VCC=5V, GND)"));
     }
 
-    // 4. Initialize BH1750 on Wire1 (SDA=15, SCL=16)
-    pinMode(BH1750_SDA_PIN, INPUT_PULLUP);
-    pinMode(BH1750_SCL_PIN, INPUT_PULLUP);
-    Wire1.begin(BH1750_SDA_PIN, BH1750_SCL_PIN);
-    Serial.print(F("  [..] BH1750 Light Sensor on Wire1 (SDA=15, SCL=16)... "));
-    if (lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, 0x23, &Wire1)) {
-        bh1750_available = true;
-        Serial.println(F("ONLINE [OK]"));
-    } else if (lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, 0x5C, &Wire1)) {
-        bh1750_available = true;
-        Serial.println(F("ONLINE at 0x5C [OK]"));
-    } else {
-        Serial.println(F("OFFLINE! Check SDA=15, SCL=16, VCC=3.3V, ADDR=GND"));
-    }
+    // 4. Initialize BH1750 Light Sensor on Wire1 (SDA=GPIO 5, SCL=GPIO 16)
+    initBH1750Sensor();
 
     // 5. Connect WiFi
     Serial.print(F("  [..] WiFi Connecting"));
@@ -415,9 +390,9 @@ void setup() {
     Serial.println();
 }
 
-// =====================================================================
+// =============================================================
 //  Main Loop
-// =====================================================================
+// =============================================================
 void loop() {
     connectWiFi();
 
@@ -425,6 +400,15 @@ void loop() {
     if (now - lastLog < INTERVAL) { delay(50); return; }
     lastLog = now;
     loopCount++;
+
+    // -------------------------------------------------------------
+    // Periodic Auto-Reconnect for BH1750 if offline
+    // -------------------------------------------------------------
+    static unsigned long lastBhRetry = 0;
+    if (!bh1750_available && (millis() - lastBhRetry > 5000)) {
+        lastBhRetry = millis();
+        initBH1750Sensor();
+    }
 
     // -------------------------------------------------------------
     // 1. Read DHT11 Temperature & Humidity
@@ -441,19 +425,6 @@ void loop() {
     float hi = dht.computeHeatIndex(tC, hum, false);
 
     // -------------------------------------------------------------
-    // Cooling Fan & 4-Channel Relay Control Logic (Hysteresis: ON >= 30.0C, OFF < 28.0C)
-    // -------------------------------------------------------------
-    if (dhtOK) {
-        if (!fanState && tC >= TEMP_FAN_ON_THRESH) {
-            setAllRelays(true);
-            Serial.println(F("  [!] TEMP >= 30.0C -> ALL 4 RELAYS (IN1..IN4) TURNED [ON]"));
-        } else if (fanState && tC < TEMP_FAN_OFF_THRESH) {
-            setAllRelays(false);
-            Serial.println(F("  [!] TEMP < 28.0C -> ALL 4 RELAYS (IN1..IN4) TURNED [OFF]"));
-        }
-    }
-
-    // -------------------------------------------------------------
     // 2. Read BH1750 Light Sensor (Real Sensor Values)
     // -------------------------------------------------------------
     float lux = 0.0f;
@@ -462,6 +433,9 @@ void loop() {
         if (r >= 0) {
             lux = r;
             currentLux = lux;
+        } else {
+            // Read error - flag for reconnect
+            bh1750_available = false;
         }
     }
     const char* lightStatus = getLightStatus(lux);
@@ -496,18 +470,9 @@ void loop() {
     }
     printLine();
 
-    // Section 2: 4-Channel Relays (IN1=7, IN2=6, IN3=5, IN4=8)
-    Serial.printf("  4-CHANNEL RELAYS  [IN1:7, IN2:6, IN3:5, IN4:8]  [%s]\n", fanState ? "ALL ON" : "ALL OFF");
-    printLine();
-    Serial.printf("    Relays State :  %s  (Pin Levels: %s)\n",
-                  fanState ? "ACTIVE (All 4 Relays ON)" : "STANDBY (All 4 Relays OFF)",
-                  fanState ? "LOW (Active)" : "HIGH (Inactive)");
-    Serial.printf("    Control Rule :  Turn ON >= %.1f C  |  Turn OFF < %.1f C\n",
-                  TEMP_FAN_ON_THRESH, TEMP_FAN_OFF_THRESH);
-    printLine();
-
-    // Section 3: Light Sensor
-    Serial.printf("  LIGHT INTENSITY  [BH1750 - Wire1 SDA=15 SCL=16]  %s\n",
+    // Section 2: Light Sensor
+    Serial.printf("  LIGHT INTENSITY  [BH1750 - Wire1 SDA=%d SCL=%d @ 0x%02X]  %s\n",
+                  activeBH1750_SDA, activeBH1750_SCL, activeBH1750_ADDR,
                   bh1750_available ? "[ONLINE]" : "[OFFLINE]");
     printLine();
     if (bh1750_available) {
@@ -518,11 +483,11 @@ void loop() {
         for (int i = lightBars; i < 30; i++) Serial.print(' ');
         Serial.printf("] %.0f lx\n", lux);
     } else {
-        Serial.println(F("    [ERR] Sensor not detected. Check wiring: SDA=15, SCL=16, ADDR=GND"));
+        Serial.println(F("    [ERR] Sensor not detected. Check: SDA=GPIO 5, SCL=GPIO 16, ADDR=GND, VCC=5V/3.3V"));
     }
     printLine();
 
-    // Section 4: Soil Moisture Sensor
+    // Section 3: Soil Moisture Sensor
     Serial.println(F("  SOIL MOISTURE  [Capacitive v2.0 - GPIO 1]"));
     printLine();
     Serial.printf("    Moisture     :  %5.1f %%      [%s]\n", soilMoisturePct, soilStatus);
@@ -536,25 +501,33 @@ void loop() {
     Serial.printf("] %.1f %%\n", soilMoisturePct);
     printLine();
 
-    // Section 5: Cloud Telemetry
+    // Section 4: Cloud Telemetry
     Serial.print(F("  CLOUD -> ThingsBoard Telemetry (12 keys) ..."));
-    sendTelemetry(tC, tF, hum, hi, lux, lightStatus, soilMoisturePct, soilVoltage, soilADC, soilStatus, fanState);
+    sendTelemetry(tC, tF, hum, hi, lux, lightStatus, soilMoisturePct, soilVoltage, soilADC, soilStatus);
 
     printLine('=');
 
     // -------------------------------------------------------------
-    // 5. Update 2004 Character LCD Display (Live Screen)
+    // 4. Update 2004 Character LCD Display (Live Screen)
     // -------------------------------------------------------------
     if (lcd_available) {
         char buf[21];
 
-        // Row 0: Temperature, Humidity & Fan Status
-        snprintf(buf, sizeof(buf), "T:%4.1fC H:%2.0f%% F:%-3s ", tC, hum, fanState ? "ON" : "OFF");
+        // Row 0: Temperature & Humidity
+        if (dhtOK) {
+            snprintf(buf, sizeof(buf), "Temp: %4.1fC Hum:%2.0f%%", tC, hum);
+        } else {
+            snprintf(buf, sizeof(buf), "Temp: --.-C  Hum:--%% ");
+        }
         lcd.setCursor(0, 0);
         lcd.print(buf);
 
         // Row 1: Ambient Light (Lux) & Status
-        snprintf(buf, sizeof(buf), "Lux : %5.0f [%-6s] ", lux, shortLightStatus(lux));
+        if (bh1750_available) {
+            snprintf(buf, sizeof(buf), "Lux : %5.0f [%-6s] ", lux, shortLightStatus(lux));
+        } else {
+            snprintf(buf, sizeof(buf), "Lux : OFFLINE       ");
+        }
         lcd.setCursor(0, 1);
         lcd.print(buf);
 
