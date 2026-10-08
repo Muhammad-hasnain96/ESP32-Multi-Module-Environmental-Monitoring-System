@@ -265,21 +265,32 @@ void sendTelemetry(float tC, float tF, float hum, float hi,
     https.addHeader("Content-Type", "application/json");
 
     String p = "{";
-    // DHT11
-    p += "\"temperature\":"     + String(tC, 1);
-    p += ",\"tempF\":"          + String(tF, 1);
-    p += ",\"humidity\":"       + String(hum, 1);
-    p += ",\"heatIndex\":"      + String(hi, 1);
+    // DHT11 Ambient Temperature & Humidity (Both dedicated m3_* and standard keys for ThingsBoard)
+    p += "\"m3_temperature\":"    + String(tC, 1);
+    p += ",\"m3_temperatureF\":"  + String(tF, 1);
+    p += ",\"m3_humidity\":"      + String(hum, 1);
+    p += ",\"m3_heatIndex\":"     + String(hi, 1);
+    p += ",\"temperature\":"      + String(tC, 1);
+    p += ",\"temperatureF\":"     + String(tF, 1);
+    p += ",\"temp\":"             + String(tC, 1);
+    p += ",\"tempF\":"            + String(tF, 1);
+    p += ",\"humidity\":"         + String(hum, 1);
+    p += ",\"heatIndex\":"        + String(hi, 1);
+    p += ",\"heat_index\":"       + String(hi, 1);
+
     // BH1750 Light
-    p += ",\"lux\":"           + String(lux, 1);
-    p += ",\"lightLevel\":\""   + String(lightLv) + "\"";
+    p += ",\"lux\":"              + String(lux, 1);
+    p += ",\"light_lux\":"        + String(lux, 1);
+    p += ",\"lightLevel\":\""      + String(lightLv) + "\"";
+    p += ",\"light_state\":\""     + String(lightLv) + "\"";
+
     // Soil Moisture
-    p += ",\"soilMoisture\":"  + String(soilPct, 1);
-    p += ",\"moisture\":"      + String(soilPct, 1);
-    p += ",\"soil_moisture\":" + String(soilPct, 1);
-    p += ",\"soilVoltage\":"   + String(soilV, 3);
-    p += ",\"soilRawADC\":"    + String(soilADC);
-    p += ",\"soilStatus\":\""   + String(soilLv) + "\"";
+    p += ",\"soilMoisture\":"     + String(soilPct, 1);
+    p += ",\"soil_moisture\":"    + String(soilPct, 1);
+    p += ",\"moisture\":"         + String(soilPct, 1);
+    p += ",\"soilVoltage\":"      + String(soilV, 3);
+    p += ",\"soilRawADC\":"       + String(soilADC);
+    p += ",\"soilStatus\":\""      + String(soilLv) + "\"";
     p += "}";
 
     int code = https.POST(p);
@@ -502,7 +513,7 @@ void loop() {
     printLine();
 
     // Section 4: Cloud Telemetry
-    Serial.print(F("  CLOUD -> ThingsBoard Telemetry (12 keys) ..."));
+    Serial.print(F("  CLOUD -> ThingsBoard Telemetry (Temp, Hum, HI, Lux, Soil) ..."));
     sendTelemetry(tC, tF, hum, hi, lux, lightStatus, soilMoisturePct, soilVoltage, soilADC, soilStatus);
 
     printLine('=');
