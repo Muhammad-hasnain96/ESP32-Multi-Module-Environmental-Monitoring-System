@@ -1004,6 +1004,56 @@ const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(
             outline: none;
         }
         .input-group input:focus { border-color: var(--primary); }
+
+        /* Real-Time Threshold Alert System */
+        .alerts-wrapper {
+            margin-bottom: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .alert-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 12px 18px;
+            border-radius: 10px;
+            font-size: 0.88rem;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.2);
+            animation: fadeIn 0.3s ease;
+        }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
+        .alert-danger {
+            background: rgba(239, 68, 68, 0.15);
+            border: 1px solid rgba(239, 68, 68, 0.45);
+            color: #fca5a5;
+        }
+        .alert-warning {
+            background: rgba(245, 158, 11, 0.15);
+            border: 1px solid rgba(245, 158, 11, 0.45);
+            color: #fcd34d;
+        }
+        .alert-normal {
+            background: rgba(16, 185, 129, 0.12);
+            border: 1px solid rgba(16, 185, 129, 0.35);
+            color: #6ee7b7;
+        }
+        .alert-left { display: flex; align-items: center; gap: 10px; }
+        .alert-icon { font-size: 1.3rem; }
+        .alert-title { font-weight: 700; color: #fff; margin-right: 4px; }
+        .alert-badge {
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-size: 0.72rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            white-space: nowrap;
+        }
+        .badge-danger { background: rgba(239, 68, 68, 0.3); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.5); }
+        .badge-warning { background: rgba(245, 158, 11, 0.3); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.5); }
+        .badge-normal { background: rgba(16, 185, 129, 0.3); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.5); }
     </style>
 </head>
 <body>
@@ -1029,6 +1079,11 @@ const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(
             <div class="banner-pill">
                 <span><b>Uptime:</b> <span id="sysUptime">--:--:--</span></span>
             </div>
+        </div>
+
+        <!-- Real-Time Threshold Alert System -->
+        <div id="alertsContainer" class="alerts-wrapper">
+            <!-- Dynamically populated via JavaScript -->
         </div>
 
         <!-- Live Sensor Grid -->
@@ -1328,6 +1383,121 @@ const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(
                     document.getElementById('tbStatus').innerText = d.tbHttp > 0 ? 'HTTP ' + d.tbHttp : 'Pending';
                     document.getElementById('tbStatus').className = (d.tbHttp === 200) ? 'card-status status-optimal' : 'card-status status-warn';
                     document.getElementById('tbCount').innerText = 'Sent: ' + d.tbSent;
+
+                    // 6. Real-Time Min / Max Threshold Alert Detection
+                    const alertList = [];
+
+                    // Temperature Check
+                    if (d.dhtOk) {
+                        if (d.temp > d.tempMax) {
+                            alertList.push({
+                                level: 'danger',
+                                icon: '🔥',
+                                sensor: 'Temperature',
+                                text: 'Current value <b>' + d.temp.toFixed(1) + ' °C</b> has exceeded MAXIMUM limit (Target Max: ' + d.tempMax.toFixed(1) + ' °C)',
+                                badge: 'MAX BREACH'
+                            });
+                        } else if (d.temp < d.tempMin) {
+                            alertList.push({
+                                level: 'warning',
+                                icon: '❄️',
+                                sensor: 'Temperature',
+                                text: 'Current value <b>' + d.temp.toFixed(1) + ' °C</b> has dropped below MINIMUM limit (Target Min: ' + d.tempMin.toFixed(1) + ' °C)',
+                                badge: 'MIN BREACH'
+                            });
+                        }
+                    }
+
+                    // Humidity Check
+                    if (d.dhtOk) {
+                        if (d.hum > d.humMax) {
+                            alertList.push({
+                                level: 'danger',
+                                icon: '💧',
+                                sensor: 'Humidity',
+                                text: 'Current value <b>' + d.hum.toFixed(1) + ' %</b> has exceeded MAXIMUM limit (Target Max: ' + d.humMax.toFixed(1) + ' %)',
+                                badge: 'MAX BREACH'
+                            });
+                        } else if (d.hum < d.humMin) {
+                            alertList.push({
+                                level: 'warning',
+                                icon: '🏜️',
+                                sensor: 'Humidity',
+                                text: 'Current value <b>' + d.hum.toFixed(1) + ' %</b> has dropped below MINIMUM limit (Target Min: ' + d.humMin.toFixed(1) + ' %)',
+                                badge: 'MIN BREACH'
+                            });
+                        }
+                    }
+
+                    // TDS (Total Dissolved Solids) Check
+                    if (d.tdsOk && d.tds !== null) {
+                        if (d.tds > d.tdsMax) {
+                            alertList.push({
+                                level: 'danger',
+                                icon: '⚠️',
+                                sensor: 'TDS Water Quality',
+                                text: 'Water TDS is <b>' + Math.round(d.tds) + ' ppm</b> (Exceeded MAXIMUM Limit: ' + d.tdsMax + ' ppm)',
+                                badge: 'MAX CONTAMINATION'
+                            });
+                        } else if (d.tds < d.tdsMin) {
+                            alertList.push({
+                                level: 'warning',
+                                icon: '💧',
+                                sensor: 'TDS Water Quality',
+                                text: 'Water TDS is <b>' + Math.round(d.tds) + ' ppm</b> (Below MINIMUM Mineral Limit: ' + d.tdsMin + ' ppm)',
+                                badge: 'UNDER-MINERALIZED'
+                            });
+                        }
+                    }
+
+                    // pH Level Check
+                    if (d.phOk && d.ph !== null) {
+                        if (d.ph > d.phMax) {
+                            alertList.push({
+                                level: 'danger',
+                                icon: '🟣',
+                                sensor: 'Water pH Level',
+                                text: 'Water pH is <b>' + d.ph.toFixed(2) + '</b> (Exceeded MAXIMUM limit: ' + d.phMax.toFixed(2) + ' - Highly Alkaline)',
+                                badge: 'ALKALINE BREACH'
+                            });
+                        } else if (d.ph < d.phMin) {
+                            alertList.push({
+                                level: 'danger',
+                                icon: '🟡',
+                                sensor: 'Water pH Level',
+                                text: 'Water pH is <b>' + d.ph.toFixed(2) + '</b> (Dropped below MINIMUM limit: ' + d.phMin.toFixed(2) + ' - Highly Acidic)',
+                                badge: 'ACIDIC BREACH'
+                            });
+                        }
+                    }
+
+                    // Render Real-Time Alerts
+                    const container = document.getElementById('alertsContainer');
+                    if (container) {
+                        if (alertList.length > 0) {
+                            let alertHtml = '';
+                            alertList.forEach(a => {
+                                const boxClass = a.level === 'danger' ? 'alert-item alert-danger' : 'alert-item alert-warning';
+                                const badgeClass = a.level === 'danger' ? 'alert-badge badge-danger' : 'alert-badge badge-warning';
+                                alertHtml += '<div class="' + boxClass + '">' +
+                                    '<div class="alert-left">' +
+                                        '<span class="alert-icon">' + a.icon + '</span>' +
+                                        '<div><span class="alert-title">[' + a.sensor + ' Alert]:</span> ' + a.text + '</div>' +
+                                    '</div>' +
+                                    '<span class="' + badgeClass + '">' + a.badge + '</span>' +
+                                '</div>';
+                            });
+                            container.innerHTML = alertHtml;
+                        } else {
+                            container.innerHTML = '<div class="alert-item alert-normal">' +
+                                '<div class="alert-left">' +
+                                    '<span class="alert-icon">✅</span>' +
+                                    '<div><span class="alert-title">[All Sensors Normal]:</span> All Water Quality (TDS, pH) & Environment (Temp, Humidity) parameters are within safe target limits.</div>' +
+                                '</div>' +
+                                '<span class="alert-badge badge-normal">OPTIMAL</span>' +
+                            '</div>';
+                        }
+                    }
                 })
                 .catch(e => console.log('Poll error:', e));
         }
