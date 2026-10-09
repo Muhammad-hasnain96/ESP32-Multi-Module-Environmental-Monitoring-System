@@ -1,6 +1,6 @@
 // =====================================================================
 // ESP32-S3 — MODULE 2: Complete Water Quality, pH & Flow Monitoring System
-// With Integrated Dual-Band AP+STA Wi-Fi Utility, Secure Login & Web Dashboard
+// With Dual AP+STA WiFi Utility, Mobile Min/Max Threshold Controls & Wireless OTA
 // =====================================================================
 // SENSOR WIRING FOR ESP32-S3:
 //   1. DHT11 Sensor:
@@ -28,6 +28,10 @@
 //      - SCL    -> GPIO 18  (Wire)
 //      - VCC    -> 5V (VIN) [5V required for contrast]
 //      - GND    -> GND
+//
+//   * Access Point: "ESP32-S3_Water_Quality" (192.168.4.1)
+//   * Web Login: admin / admin
+//   * Wireless OTA: Accessible via /update or ArduinoOTA (port 3232)
 // =====================================================================
 
 #include <Arduino.h>
@@ -40,6 +44,8 @@
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
 #include <LiquidCrystal_I2C.h>
+#include <Update.h>
+#include <ArduinoOTA.h>
 
 // =====================================================================
 //  1. DHT11 Configuration (GPIO 4)
@@ -103,6 +109,7 @@ const char* AP_PASS = "12345678";
 
 Preferences prefWifi;
 Preferences prefAuth;
+Preferences prefLimits;
 
 String wifi_ssid = "Meeting Room";
 String wifi_pass = "Shahid786$$";
@@ -113,6 +120,18 @@ const char* TB_HOST   = "https://things.digitalm.cloud";
 const char* TB_TOKEN  = "52kqr3ax2flcp0gdy56s";
 
 WebServer server(80);
+
+// =====================================================================
+//  6. User-Configurable Min & Max Target Limits (Persistent in Flash)
+// =====================================================================
+float limitTempMin = 18.0f;
+float limitTempMax = 32.0f;
+float limitHumMin  = 35.0f;
+float limitHumMax  = 75.0f;
+float limitTdsMin  = 50.0f;
+float limitTdsMax  = 300.0f;
+float limitPhMin   = 6.5f;
+float limitPhMax   = 8.5f;
 
 // =====================================================================
 //  Global Sensor State & Timing Variables
@@ -513,7 +532,7 @@ bool isClientAuthenticated() {
 }
 
 // =====================================================================
-//  HTML Web Pages (Login Screen & Monitoring Dashboard)
+//  HTML Web Pages (Login, Dashboard & Wireless OTA)
 // =====================================================================
 
 const char LOGIN_HTML[] PROGMEM = R"rawliteral(
@@ -650,6 +669,152 @@ const char LOGIN_HTML[] PROGMEM = R"rawliteral(
 </html>
 )rawliteral";
 
+const char OTA_UPDATE_HTML[] PROGMEM = R"rawliteral(
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Wireless OTA Update | ESP32-S3 Module 2</title>
+    <style>
+        :root {
+            --bg: #090e1d;
+            --card-bg: #131e33;
+            --primary: #06b6d4;
+            --text-main: #f8fafc;
+            --text-muted: #94a3b8;
+            --border: #1e3a5f;
+            --danger: #ef4444;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+        body { background: var(--bg); color: var(--text-main); min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 16px; }
+        .ota-card {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 32px 24px;
+            width: 100%;
+            max-width: 440px;
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5);
+            text-align: center;
+        }
+        .icon { font-size: 3rem; margin-bottom: 12px; }
+        h1 { font-size: 1.4rem; font-weight: 700; margin-bottom: 6px; }
+        p.sub { font-size: 0.85rem; color: var(--text-muted); margin-bottom: 24px; }
+        .file-box {
+            border: 2px dashed var(--border);
+            border-radius: 12px;
+            padding: 24px 16px;
+            margin-bottom: 20px;
+            background: rgba(9, 14, 29, 0.6);
+        }
+        input[type="file"] { display: block; width: 100%; color: var(--text-muted); font-size: 0.9rem; margin-top: 8px; }
+        .btn {
+            width: 100%;
+            padding: 12px;
+            background: var(--primary);
+            color: #090e1d;
+            border: none;
+            border-radius: 8px;
+            font-size: 1rem;
+            font-weight: 700;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .btn:hover { background: #0891b2; color: #fff; }
+        .progress-box { display: none; margin-top: 20px; text-align: left; }
+        .progress-bar { width: 100%; height: 8px; background: #090e1d; border-radius: 4px; overflow: hidden; margin-top: 8px; }
+        .progress-fill { height: 100%; width: 0%; background: var(--primary); transition: width 0.3s; }
+        .status-txt { font-size: 0.85rem; color: var(--text-muted); margin-top: 8px; }
+        .back-link { display: inline-block; margin-top: 20px; color: var(--primary); font-size: 0.85rem; text-decoration: none; }
+        .back-link:hover { text-decoration: underline; }
+    </style>
+</head>
+<body>
+    <div class="ota-card">
+        <div class="icon">⚡</div>
+        <h1>Wireless Firmware Update (OTA)</h1>
+        <p class="sub">Upload compiled <b>firmware.bin</b> over Wi-Fi without any cables!</p>
+
+        <form id="uploadForm" enctype="multipart/form-data">
+            <div class="file-box">
+                <span style="font-size:1.8rem;">📦</span>
+                <div style="font-size:0.9rem; font-weight:600; margin-top:6px;">Choose Firmware Binary</div>
+                <input type="file" id="firmwareFile" accept=".bin" required>
+            </div>
+            <button type="submit" class="btn" id="uploadBtn">Flash Wirelessly</button>
+        </form>
+
+        <div class="progress-box" id="progressBox">
+            <div style="display:flex; justify-content:space-between; font-size:0.8rem; font-weight:600;">
+                <span>Uploading to ESP32-S3...</span>
+                <span id="pctTxt">0%</span>
+            </div>
+            <div class="progress-bar">
+                <div class="progress-fill" id="progressFill"></div>
+            </div>
+            <div class="status-txt" id="statusTxt">Transmitting binary chunks over Wi-Fi...</div>
+        </div>
+
+        <a href="/" class="back-link">← Return to Water Dashboard</a>
+    </div>
+
+    <script>
+        const form = document.getElementById('uploadForm');
+        form.onsubmit = function(e) {
+            e.preventDefault();
+            const fileInput = document.getElementById('firmwareFile');
+            if (!fileInput.files.length) return;
+            const file = fileInput.files[0];
+            const btn = document.getElementById('uploadBtn');
+            const pBox = document.getElementById('progressBox');
+            const pFill = document.getElementById('progressFill');
+            const pctTxt = document.getElementById('pctTxt');
+            const statusTxt = document.getElementById('statusTxt');
+
+            btn.disabled = true;
+            btn.innerText = 'Flashing...';
+            pBox.style.display = 'block';
+
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', '/update', true);
+
+            xhr.upload.onprogress = function(e) {
+                if (e.lengthComputable) {
+                    const pct = Math.round((e.loaded / e.total) * 100);
+                    pFill.style.width = pct + '%';
+                    pctTxt.innerText = pct + '%';
+                }
+            };
+
+            xhr.onload = function() {
+                if (xhr.status === 200) {
+                    pFill.style.width = '100%';
+                    pctTxt.innerText = '100%';
+                    statusTxt.innerHTML = '✅ <b>Success!</b> ESP32-S3 is rebooting into the new firmware. Reconnect in 8 seconds...';
+                    setTimeout(() => { window.location.href = '/'; }, 8000);
+                } else {
+                    statusTxt.innerHTML = '❌ <b>Failed!</b> ' + xhr.responseText;
+                    btn.disabled = false;
+                    btn.innerText = 'Try Again';
+                }
+            };
+
+            xhr.onerror = function() {
+                statusTxt.innerHTML = '❌ Upload interrupted. ESP32 may be rebooting or connection lost.';
+                btn.disabled = false;
+                btn.innerText = 'Try Again';
+            };
+
+            const formData = new FormData();
+            formData.append('update', file);
+            xhr.send(formData);
+        };
+    </script>
+</body>
+</html>
+)rawliteral";
+
 const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
 <html lang="en">
@@ -687,13 +852,27 @@ const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(
         }
         .nav-brand { font-size: 1.15rem; font-weight: 700; display: flex; align-items: center; gap: 8px; }
         .nav-brand span { color: var(--primary); }
+        .nav-actions { display: flex; gap: 8px; align-items: center; }
+        .btn-nav {
+            padding: 7px 13px;
+            background: #090e1d;
+            color: #e2e8f0;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            font-size: 0.82rem;
+            font-weight: 600;
+            cursor: pointer;
+            text-decoration: none;
+            transition: all 0.2s;
+        }
+        .btn-nav:hover { background: var(--primary); color: #090e1d; border-color: var(--primary); }
         .btn-logout {
-            padding: 7px 14px;
+            padding: 7px 13px;
             background: #1e293b;
             color: #e2e8f0;
             border: 1px solid var(--border);
             border-radius: 6px;
-            font-size: 0.85rem;
+            font-size: 0.82rem;
             cursor: pointer;
             transition: all 0.2s;
         }
@@ -759,16 +938,58 @@ const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(
         .fill-blue { background: var(--primary); }
         .fill-emerald { background: var(--emerald); }
         .fill-amber { background: var(--amber); }
-        .fill-purple { background: var(--purple); }
 
-        /* Wi-Fi Utility Card */
-        .wifi-section {
+        /* Configuration Sections */
+        .section-box {
             background: var(--card-bg);
             border: 1px solid var(--border);
             border-radius: 14px;
             padding: 20px;
+            margin-bottom: 20px;
         }
-        .wifi-header { font-size: 1.1rem; font-weight: 700; margin-bottom: 14px; display: flex; align-items: center; gap: 8px; }
+        .section-header { font-size: 1.1rem; font-weight: 700; margin-bottom: 14px; display: flex; align-items: center; gap: 8px; }
+
+        .limits-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+            gap: 14px;
+            margin-bottom: 16px;
+        }
+        .limit-card {
+            background: #090e1d;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 14px;
+        }
+        .limit-card-title { font-size: 0.85rem; font-weight: 700; color: #fff; margin-bottom: 10px; display: flex; align-items: center; justify-content: space-between; }
+        .limit-inputs { display: flex; gap: 8px; align-items: center; }
+        .limit-field { flex: 1; }
+        .limit-field label { display: block; font-size: 0.7rem; color: var(--text-muted); font-weight: 600; text-transform: uppercase; margin-bottom: 4px; }
+        .limit-field input {
+            width: 100%;
+            padding: 8px 10px;
+            background: #131e33;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: #fff;
+            font-size: 0.9rem;
+            outline: none;
+        }
+        .limit-field input:focus { border-color: var(--primary); }
+
+        .btn-action {
+            padding: 10px 18px;
+            background: var(--primary);
+            color: #090e1d;
+            border: none;
+            border-radius: 8px;
+            font-weight: 700;
+            font-size: 0.9rem;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+        .btn-action:hover { background: #0891b2; color: #fff; }
+
         .wifi-grid { display: grid; grid-template-columns: 1fr 1fr auto; gap: 10px; align-items: end; }
         @media (max-width: 650px) { .wifi-grid { grid-template-columns: 1fr; } }
         .input-group label { display: block; font-size: 0.75rem; font-weight: 600; color: var(--text-muted); margin-bottom: 5px; text-transform: uppercase; }
@@ -783,22 +1004,6 @@ const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(
             outline: none;
         }
         .input-group input:focus { border-color: var(--primary); }
-        .btn-action {
-            padding: 10px 18px;
-            background: var(--primary);
-            color: #090e1d;
-            border: none;
-            border-radius: 8px;
-            font-weight: 700;
-            font-size: 0.9rem;
-            cursor: pointer;
-            white-space: nowrap;
-            height: 41px;
-        }
-        .btn-action:hover { background: #0891b2; color: #fff; }
-        .btn-scan { background: #6366f1; color:#fff; }
-        .btn-scan:hover { background: #4f46e5; }
-        .wifi-status-text { margin-top: 12px; font-size: 0.82rem; color: var(--text-muted); }
     </style>
 </head>
 <body>
@@ -806,7 +1011,10 @@ const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(
         <!-- Navbar -->
         <div class="navbar">
             <div class="nav-brand">🌊 <span>Module 2</span> Water Quality & Flow Hub</div>
-            <button class="btn-logout" onclick="window.location.href='/logout'">Sign Out</button>
+            <div class="nav-actions">
+                <a href="/update" class="btn-nav">⚡ Wireless OTA</a>
+                <button class="btn-logout" onclick="window.location.href='/logout'">Sign Out</button>
+            </div>
         </div>
 
         <!-- Status Banner -->
@@ -837,7 +1045,10 @@ const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(
                         Humidity: <b style="color:#fff;" id="valHum">--.-</b> % | HeatIdx: <b style="color:#fff;" id="valHi">--.-</b> °C
                     </div>
                 </div>
-                <div class="card-status status-info" id="statusDht">DHT11 (GPIO 4)</div>
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <div class="card-status status-info" id="statusDht">DHT11 (GPIO 4)</div>
+                    <span style="font-size:0.75rem; color:var(--text-muted);" id="lblTempRange">Target: -- - -- °C</span>
+                </div>
             </div>
 
             <!-- 2. Water TDS (Total Dissolved Solids) -->
@@ -854,7 +1065,7 @@ const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(
                 </div>
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-top:10px;">
                     <div class="card-status status-optimal" id="statusTds">--</div>
-                    <span style="font-size:0.75rem; color:var(--text-muted);" id="tdsVoltTxt">GPIO 1 (0.00 V)</span>
+                    <span style="font-size:0.75rem; color:var(--text-muted);" id="lblTdsRange">Target: -- - -- ppm</span>
                 </div>
             </div>
 
@@ -870,7 +1081,7 @@ const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(
                 </div>
                 <div style="display:flex; justify-content:space-between; align-items:center;">
                     <div class="card-status status-optimal" id="statusPh">--</div>
-                    <span style="font-size:0.75rem; color:var(--text-muted);" id="phAlertTxt">E-201-C (GPIO 2)</span>
+                    <span style="font-size:0.75rem; color:var(--text-muted);" id="lblPhRange">Target: -- - -- pH</span>
                 </div>
             </div>
 
@@ -906,11 +1117,86 @@ const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(
             </div>
         </div>
 
-        <!-- Wi-Fi Utility Management -->
-        <div class="wifi-section">
-            <div class="wifi-header">📶 Wi-Fi Station Utility & Configuration</div>
+        <!-- Min & Max Target Thresholds Configurator -->
+        <div class="section-box">
+            <div class="section-header">🎯 Mobile Sensor Min & Max Target Thresholds</div>
+            <div style="font-size:0.85rem; color:var(--text-muted); margin-bottom:16px;">
+                Define your ideal water & environment ranges. Cards will automatically highlight alerts in real-time when sensor values breach these limits.
+            </div>
+
+            <div class="limits-grid">
+                <!-- Temp Limits -->
+                <div class="limit-card">
+                    <div class="limit-card-title">🌡️ Temperature Limits (°C)</div>
+                    <div class="limit-inputs">
+                        <div class="limit-field">
+                            <label>Min Temp</label>
+                            <input type="number" step="0.5" id="inpTempMin" placeholder="18.0">
+                        </div>
+                        <div class="limit-field">
+                            <label>Max Temp</label>
+                            <input type="number" step="0.5" id="inpTempMax" placeholder="32.0">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Humidity Limits -->
+                <div class="limit-card">
+                    <div class="limit-card-title">💧 Humidity Limits (%)</div>
+                    <div class="limit-inputs">
+                        <div class="limit-field">
+                            <label>Min Hum</label>
+                            <input type="number" step="1" id="inpHumMin" placeholder="35">
+                        </div>
+                        <div class="limit-field">
+                            <label>Max Hum</label>
+                            <input type="number" step="1" id="inpHumMax" placeholder="75">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- TDS Limits -->
+                <div class="limit-card">
+                    <div class="limit-card-title">💧 TDS Limits (ppm)</div>
+                    <div class="limit-inputs">
+                        <div class="limit-field">
+                            <label>Min TDS</label>
+                            <input type="number" step="10" id="inpTdsMin" placeholder="50">
+                        </div>
+                        <div class="limit-field">
+                            <label>Max TDS</label>
+                            <input type="number" step="10" id="inpTdsMax" placeholder="300">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- pH Limits -->
+                <div class="limit-card">
+                    <div class="limit-card-title">🧪 pH Limits (0 - 14)</div>
+                    <div class="limit-inputs">
+                        <div class="limit-field">
+                            <label>Min pH</label>
+                            <input type="number" step="0.1" id="inpPhMin" placeholder="6.5">
+                        </div>
+                        <div class="limit-field">
+                            <label>Max pH</label>
+                            <input type="number" step="0.1" id="inpPhMax" placeholder="8.5">
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div style="display:flex; align-items:center; gap:12px;">
+                <button class="btn-action" onclick="saveLimits()">💾 Save Limits to ESP32</button>
+                <span id="limitFeedback" style="font-size:0.85rem; color:var(--text-muted);">Saved in non-volatile flash memory.</span>
+            </div>
+        </div>
+
+        <!-- Wi-Fi Station Utility & Configuration -->
+        <div class="section-box">
+            <div class="section-header">📶 Wi-Fi Station Utility & Configuration</div>
             <div style="margin-bottom:14px; display:flex; gap:10px; align-items:center;">
-                <button class="btn-action btn-scan" id="btnScan" onclick="scanNetworks()">🔍 Scan Available Wi-Fi</button>
+                <button class="btn-action" style="background:#6366f1; color:#fff;" id="btnScan" onclick="scanNetworks()">🔍 Scan Available Wi-Fi</button>
                 <span id="scanMsg" style="font-size:0.8rem; color:var(--text-muted);">Click to discover nearby routers</span>
             </div>
             
@@ -928,11 +1214,13 @@ const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(
                     <button class="btn-action" style="background:#475569; color:#fff;" onclick="resetWiFi()">🗑️ Reset</button>
                 </div>
             </div>
-            <div class="wifi-status-text" id="wifiFeedback">ESP32-S3 will auto-reconnect to saved router credentials upon boot.</div>
+            <div style="margin-top:12px; font-size:0.82rem; color:var(--text-muted);" id="wifiFeedback">ESP32-S3 will auto-reconnect to saved router credentials upon boot.</div>
         </div>
     </div>
 
     <script>
+        let limitsLoaded = false;
+
         function updateDashboard() {
             fetch('/data')
                 .then(r => {
@@ -944,13 +1232,40 @@ const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(
                     document.getElementById('sysUptime').innerText = d.uptime;
                     document.getElementById('staStatus').innerText = d.wifiSta + (d.ip ? ' (' + d.ip + ')' : '');
 
-                    // Temp & Hum
+                    // Populate limits on initial load
+                    if (!limitsLoaded && d.tempMin !== undefined) {
+                        document.getElementById('inpTempMin').value = d.tempMin;
+                        document.getElementById('inpTempMax').value = d.tempMax;
+                        document.getElementById('inpHumMin').value = d.humMin;
+                        document.getElementById('inpHumMax').value = d.humMax;
+                        document.getElementById('inpTdsMin').value = d.tdsMin;
+                        document.getElementById('inpTdsMax').value = d.tdsMax;
+                        document.getElementById('inpPhMin').value = d.phMin;
+                        document.getElementById('inpPhMax').value = d.phMax;
+                        limitsLoaded = true;
+                    }
+
+                    // Display Target Ranges
+                    document.getElementById('lblTempRange').innerText = d.tempMin + ' - ' + d.tempMax + ' °C';
+                    document.getElementById('lblTdsRange').innerText = 'Target: ' + d.tdsMin + ' - ' + d.tdsMax + ' ppm';
+                    document.getElementById('lblPhRange').innerText = 'Target: ' + d.phMin + ' - ' + d.phMax + ' pH';
+
+                    // 1. Temp & Hum
                     if (d.dhtOk) {
                         document.getElementById('valTemp').innerText = d.temp.toFixed(1);
                         document.getElementById('valHum').innerText = d.hum.toFixed(1);
                         document.getElementById('valHi').innerText = d.hi.toFixed(1);
-                        document.getElementById('statusDht').innerText = 'DHT11 (GPIO 4)';
-                        document.getElementById('statusDht').className = 'card-status status-info';
+                        const sTemp = document.getElementById('statusDht');
+                        if (d.temp < d.tempMin) {
+                            sTemp.innerText = '❄️ LOW (< ' + d.tempMin + '°C)';
+                            sTemp.className = 'card-status status-warn';
+                        } else if (d.temp > d.tempMax) {
+                            sTemp.innerText = '🔥 HIGH (> ' + d.tempMax + '°C)';
+                            sTemp.className = 'card-status status-err';
+                        } else {
+                            sTemp.innerText = '✅ OPTIMAL';
+                            sTemp.className = 'card-status status-optimal';
+                        }
                     } else {
                         document.getElementById('valTemp').innerText = '--.-';
                         document.getElementById('valHum').innerText = '--.-';
@@ -959,54 +1274,85 @@ const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(
                         document.getElementById('statusDht').className = 'card-status status-err';
                     }
 
-                    // TDS Water Quality
+                    // 2. TDS Water Quality
                     if (d.tdsOk && d.tds !== null) {
                         document.getElementById('valTds').innerText = Math.round(d.tds);
-                        document.getElementById('statusTds').innerText = d.tdsStatus;
-                        document.getElementById('statusTds').className = 'card-status status-optimal';
                         document.getElementById('barTds').style.width = Math.min((d.tds / 500) * 100, 100) + '%';
-                        document.getElementById('tdsVoltTxt').innerText = 'GPIO 1 (' + d.tdsV.toFixed(2) + ' V)';
+                        const sTds = document.getElementById('statusTds');
+                        if (d.tds > d.tdsMax) {
+                            sTds.innerText = '⚠️ HIGH TDS (> ' + d.tdsMax + ' ppm)';
+                            sTds.className = 'card-status status-err';
+                        } else if (d.tds < d.tdsMin) {
+                            sTds.innerText = '💧 LOW MINERALS (< ' + d.tdsMin + ' ppm)';
+                            sTds.className = 'card-status status-info';
+                        } else {
+                            sTds.innerText = d.tdsStatus;
+                            sTds.className = 'card-status status-optimal';
+                        }
                     } else {
                         document.getElementById('valTds').innerText = '--';
                         document.getElementById('statusTds').innerText = 'OFFLINE';
                         document.getElementById('statusTds').className = 'card-status status-err';
                         document.getElementById('barTds').style.width = '0%';
-                        document.getElementById('tdsVoltTxt').innerText = 'GPIO 1 (Disconnected)';
                     }
 
-                    // pH Sensor
+                    // 3. pH Sensor
                     if (d.phOk && d.ph !== null) {
                         document.getElementById('valPh').innerText = d.ph.toFixed(2);
                         document.getElementById('valPhV').innerText = d.phV.toFixed(2);
-                        document.getElementById('statusPh').innerText = d.phStatus;
-                        if (d.ph < 6.5) {
-                            document.getElementById('statusPh').className = 'card-status status-warn';
-                        } else if (d.ph > 8.5) {
-                            document.getElementById('statusPh').className = 'card-status status-purple';
+                        const sPh = document.getElementById('statusPh');
+                        if (d.ph < d.phMin) {
+                            sPh.innerText = '⚠️ ACIDIC (< ' + d.phMin + ')';
+                            sPh.className = 'card-status status-warn';
+                        } else if (d.ph > d.phMax) {
+                            sPh.innerText = '⚠️ ALKALINE (> ' + d.phMax + ')';
+                            sPh.className = 'card-status status-purple';
                         } else {
-                            document.getElementById('statusPh').className = 'card-status status-optimal';
+                            sPh.innerText = '✅ OPTIMAL (' + d.phStatus + ')';
+                            sPh.className = 'card-status status-optimal';
                         }
-                        document.getElementById('phAlertTxt').innerText = 'E-201-C (Online)';
                     } else {
                         document.getElementById('valPh').innerText = '--.-';
                         document.getElementById('valPhV').innerText = '--.-';
                         document.getElementById('statusPh').innerText = 'OFFLINE';
                         document.getElementById('statusPh').className = 'card-status status-err';
-                        document.getElementById('phAlertTxt').innerText = 'E-201-C (Disconnected)';
                     }
 
-                    // Water Flow
+                    // 4. Water Flow
                     document.getElementById('valFlow').innerText = d.flowRate.toFixed(2);
                     document.getElementById('valVol').innerText = d.vol.toFixed(2);
                     document.getElementById('valFlowHz').innerText = d.flowHz.toFixed(1);
                     document.getElementById('statusFlow').innerText = d.flowStatus;
 
-                    // ThingsBoard
+                    // 5. ThingsBoard
                     document.getElementById('tbStatus').innerText = d.tbHttp > 0 ? 'HTTP ' + d.tbHttp : 'Pending';
                     document.getElementById('tbStatus').className = (d.tbHttp === 200) ? 'card-status status-optimal' : 'card-status status-warn';
                     document.getElementById('tbCount').innerText = 'Sent: ' + d.tbSent;
                 })
                 .catch(e => console.log('Poll error:', e));
+        }
+
+        function saveLimits() {
+            const body = new URLSearchParams();
+            body.append('tempMin', document.getElementById('inpTempMin').value);
+            body.append('tempMax', document.getElementById('inpTempMax').value);
+            body.append('humMin',  document.getElementById('inpHumMin').value);
+            body.append('humMax',  document.getElementById('inpHumMax').value);
+            body.append('tdsMin',  document.getElementById('inpTdsMin').value);
+            body.append('tdsMax',  document.getElementById('inpTdsMax').value);
+            body.append('phMin',   document.getElementById('inpPhMin').value);
+            body.append('phMax',   document.getElementById('inpPhMax').value);
+
+            const fb = document.getElementById('limitFeedback');
+            fb.innerText = 'Saving limits...';
+
+            fetch('/savelimits', { method: 'POST', body: body })
+                .then(r => r.text())
+                .then(txt => {
+                    fb.innerText = '✅ ' + txt;
+                    updateDashboard();
+                })
+                .catch(() => { fb.innerText = '❌ Error saving limits'; });
         }
 
         function scanNetworks() {
@@ -1154,12 +1500,48 @@ void handleData() {
     json += "\"vol\":"            + String(totalLiters, 2) + ",";
     json += "\"flowStatus\":\""   + String(getFlowStatus(currentFlowLMin)) + "\",";
 
+    // Target Limits
+    json += "\"tempMin\":"        + String(limitTempMin, 1) + ",";
+    json += "\"tempMax\":"        + String(limitTempMax, 1) + ",";
+    json += "\"humMin\":"         + String(limitHumMin, 1) + ",";
+    json += "\"humMax\":"         + String(limitHumMax, 1) + ",";
+    json += "\"tdsMin\":"         + String(limitTdsMin, 0) + ",";
+    json += "\"tdsMax\":"         + String(limitTdsMax, 0) + ",";
+    json += "\"phMin\":"          + String(limitPhMin, 1) + ",";
+    json += "\"phMax\":"          + String(limitPhMax, 1) + ",";
+
     // ThingsBoard
     json += "\"tbHttp\":"         + String(lastTbHttpCode) + ",";
     json += "\"tbSent\":"         + String(tbSendCount);
     json += "}";
 
     server.send(200, "application/json", json);
+}
+
+void handleSaveLimits() {
+    if (!isClientAuthenticated()) {
+        server.send(401, "text/plain", "Unauthorized");
+        return;
+    }
+    if (server.hasArg("tempMin")) limitTempMin = server.arg("tempMin").toFloat();
+    if (server.hasArg("tempMax")) limitTempMax = server.arg("tempMax").toFloat();
+    if (server.hasArg("humMin"))  limitHumMin  = server.arg("humMin").toFloat();
+    if (server.hasArg("humMax"))  limitHumMax  = server.arg("humMax").toFloat();
+    if (server.hasArg("tdsMin"))  limitTdsMin  = server.arg("tdsMin").toFloat();
+    if (server.hasArg("tdsMax"))  limitTdsMax  = server.arg("tdsMax").toFloat();
+    if (server.hasArg("phMin"))   limitPhMin   = server.arg("phMin").toFloat();
+    if (server.hasArg("phMax"))   limitPhMax   = server.arg("phMax").toFloat();
+
+    prefLimits.putFloat("tMin", limitTempMin);
+    prefLimits.putFloat("tMax", limitTempMax);
+    prefLimits.putFloat("hMin", limitHumMin);
+    prefLimits.putFloat("hMax", limitHumMax);
+    prefLimits.putFloat("tdsMin", limitTdsMin);
+    prefLimits.putFloat("tdsMax", limitTdsMax);
+    prefLimits.putFloat("phMin", limitPhMin);
+    prefLimits.putFloat("phMax", limitPhMax);
+
+    server.send(200, "text/plain", "Limits saved successfully!");
 }
 
 void handleScan() {
@@ -1208,6 +1590,48 @@ void handleResetWiFi() {
     server.send(200, "text/plain", "Wi-Fi credentials cleared.");
 }
 
+// Wireless Web OTA Handlers
+void handleOtaPage() {
+    if (!isClientAuthenticated()) {
+        server.sendHeader("Location", "/");
+        server.send(302, "text/plain", "");
+        return;
+    }
+    server.send(200, "text/html", OTA_UPDATE_HTML);
+}
+
+void handleOtaUploadDone() {
+    if (!isClientAuthenticated()) {
+        server.send(401, "text/plain", "Unauthorized");
+        return;
+    }
+    server.sendHeader("Connection", "close");
+    server.send(200, "text/plain", (Update.hasError()) ? "OTA Update Failed!" : "OTA Update Success! Rebooting...");
+    delay(1000);
+    ESP.restart();
+}
+
+void handleOtaChunk() {
+    if (!isClientAuthenticated()) return;
+    HTTPUpload& upload = server.upload();
+    if (upload.status == UPLOAD_FILE_START) {
+        Serial.printf("OTA Update Started: %s\n", upload.filename.c_str());
+        if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
+            Update.printError(Serial);
+        }
+    } else if (upload.status == UPLOAD_FILE_WRITE) {
+        if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
+            Update.printError(Serial);
+        }
+    } else if (upload.status == UPLOAD_FILE_END) {
+        if (Update.end(true)) {
+            Serial.printf("OTA Update Success: %u bytes\n", upload.totalSize);
+        } else {
+            Update.printError(Serial);
+        }
+    }
+}
+
 // =====================================================================
 //  Setup
 // =====================================================================
@@ -1224,7 +1648,7 @@ void setup() {
     Serial.println(F("  Sensors: DHT11 (GPIO 4) | TDS (GPIO 1 - ADC1_CH0)"));
     Serial.println(F("           Flow (GPIO 5)  | E-201-C pH (GPIO 2 - ADC1_CH1)"));
     Serial.println(F("  Display: 2004 I2C LCD (Wire: SDA=17, SCL=18)"));
-    Serial.println(F("  Utility: WebServer AP (192.168.4.1) + Secure Login Dashboard"));
+    Serial.println(F("  Utility: WebServer AP (192.168.4.1) + Mobile Limits + Wireless OTA"));
     printLine('=');
 
     // 1. TDS ADC (GPIO 1 - ADC1_CH0)
@@ -1271,7 +1695,7 @@ void setup() {
         Serial.println(F("  [..] 2004 LCD Not Detected on Wire (SDA=17, SCL=18)"));
     }
 
-    // 6. Preferences for WiFi & Auth
+    // 6. Preferences for WiFi, Auth & Limits
     prefWifi.begin("m2-wifi", false);
     wifi_ssid = prefWifi.getString("ssid", "Meeting Room");
     wifi_pass = prefWifi.getString("pass", "Shahid786$$");
@@ -1279,6 +1703,16 @@ void setup() {
     prefAuth.begin("m2-auth", false);
     auth_user = prefAuth.getString("user", "admin");
     auth_pass = prefAuth.getString("pass", "admin");
+
+    prefLimits.begin("m2-limits", false);
+    limitTempMin = prefLimits.getFloat("tMin", 18.0f);
+    limitTempMax = prefLimits.getFloat("tMax", 32.0f);
+    limitHumMin  = prefLimits.getFloat("hMin", 35.0f);
+    limitHumMax  = prefLimits.getFloat("hMax", 75.0f);
+    limitTdsMin  = prefLimits.getFloat("tdsMin", 50.0f);
+    limitTdsMax  = prefLimits.getFloat("tdsMax", 300.0f);
+    limitPhMin   = prefLimits.getFloat("phMin", 6.5f);
+    limitPhMax   = prefLimits.getFloat("phMax", 8.5f);
 
     // 7. Dual WiFi Mode (AP + STA)
     WiFi.mode(WIFI_AP_STA);
@@ -1294,7 +1728,13 @@ void setup() {
         MDNS.addService("http", "tcp", 80);
     }
 
-    // 8. Configure Web Server Headers & Routes
+    // 8. ArduinoOTA Wireless Flashing Setup
+    ArduinoOTA.setHostname("esp32-s3-module2");
+    ArduinoOTA.setPassword("admin");
+    ArduinoOTA.begin();
+    Serial.println(F("  [OK] ArduinoOTA Initialized (Hostname: esp32-s3-module2)"));
+
+    // 9. Configure Web Server Headers & Routes
     const char* headerkeys[] = {"Cookie"};
     size_t headerkeyssize = sizeof(headerkeys) / sizeof(char*);
     server.collectHeaders(headerkeys, headerkeyssize);
@@ -1303,9 +1743,14 @@ void setup() {
     server.on("/login", HTTP_POST, handleLogin);
     server.on("/logout", HTTP_GET, handleLogout);
     server.on("/data", HTTP_GET, handleData);
+    server.on("/savelimits", HTTP_POST, handleSaveLimits);
     server.on("/scan", HTTP_GET, handleScan);
     server.on("/savewifi", HTTP_POST, handleSaveWiFi);
     server.on("/resetwifi", HTTP_POST, handleResetWiFi);
+
+    // OTA Update Routes
+    server.on("/update", HTTP_GET, handleOtaPage);
+    server.on("/update", HTTP_POST, handleOtaUploadDone, handleOtaChunk);
 
     server.begin();
     Serial.println(F("  [OK] WebServer Started on Port 80 (Login Protected)"));
@@ -1328,9 +1773,12 @@ void loop() {
     // 1. Process Incoming HTTP Clients Immediately
     server.handleClient();
 
+    // 2. Handle ArduinoOTA Wireless Packets
+    ArduinoOTA.handle();
+
     unsigned long now = millis();
 
-    // 2. Read sensors & send telemetry every 3 seconds (INTERVAL)
+    // 3. Read sensors & send telemetry every 3 seconds (INTERVAL)
     if (now - lastLog >= INTERVAL) {
         float elapsedSec = (now - lastLog) / 1000.0f;
         lastLog = now;
@@ -1409,7 +1857,7 @@ void loop() {
         }
     }
 
-    // 3. Rotate LCD screen page every 5 seconds (5000ms)
+    // 4. Rotate LCD screen page every 5 seconds (5000ms)
     if (lcd_available) {
         if (now - lastLcdSwitch >= LCD_PAGE_INTERVAL) {
             lastLcdSwitch = now;
