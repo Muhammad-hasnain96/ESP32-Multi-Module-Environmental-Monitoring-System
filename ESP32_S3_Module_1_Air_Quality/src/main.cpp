@@ -11,6 +11,10 @@
 //  FS200A         GPIO 5 (INT)        Air/Water Flow
 //  2004 I2C LCD   Wire:  SDA=GPIO 15  20x4 Real-time Local Display
 //                        SCL=GPIO 18  (VCC=5V, GND=GND)
+//
+//  * NO RELAYS IN THIS MODULE (Pure Monitoring Hub)
+//  * Access Point: "ESP32-S3_Air_Quality" (192.168.4.1)
+//  * Login Credentials: Username: admin | Password: admin
 // =====================================================================
 
 #include <Arduino.h>
@@ -18,6 +22,9 @@
 #include <SPI.h>
 #include <DHT.h>
 #include <WiFi.h>
+#include <WebServer.h>
+#include <Preferences.h>
+#include <ESPmDNS.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
 #include <Adafruit_CCS811.h>
@@ -67,16 +74,34 @@ LiquidCrystal_I2C lcd(0x27, 20, 4);
 bool lcd_available = false;
 
 // =====================================================================
-//  WiFi & ThingsBoard
+//  6. WiFi, WebServer, Preferences & ThingsBoard Configuration
 // =====================================================================
-const char* WIFI_SSID = "Meeting Room";
-const char* WIFI_PASS = "Shahid786$$";
+const char* AP_SSID = "ESP32-S3_Air_Quality";
+const char* AP_PASS = "12345678";
+
+String wifi_ssid = "Meeting Room";
+String wifi_pass = "Shahid786$$";
+
 const char* TB_HOST   = "https://things.digitalm.cloud";
 const char* TB_TOKEN  = "52kqr3ax2flcp0gdy56s";
+int lastTbHttpCode = 0;
+unsigned long tbSendCount = 0;
 
-// =====================================================================
-//  Timing & Rotating Screens
-// =====================================================================
+WebServer server(80);
+Preferences prefWifi;
+Preferences prefAuth;
+
+String auth_user = "admin";
+String auth_pass = "admin";
+
+// Live Readings & States
+float currentTC = 25.0f, currentTF = 77.0f, currentHum = 50.0f, currentHI = 25.0f;
+bool  currentDhtOk = false;
+float currentNH3 = 0.0f, currentMQ137V = 0.0f;
+bool  currentNH3Alert = false;
+float currentFlowHz = 0.0f;
+unsigned long totalFlowPulses = 0;
+
 const unsigned long INTERVAL          = 3000UL; // 3 seconds sensor reading & serial telemetry
 const unsigned long LCD_PAGE_INTERVAL = 5000UL; // 5 seconds LCD screen rotation
 unsigned long lastLog = 0;
@@ -84,13 +109,8 @@ unsigned long lastLcdSwitch = 0;
 unsigned long loopCount = 0;
 int lcdScreenPage = 0; // 0 = Screen 1 (Temp/Hum/HeatIdx), 1 = Screen 2 (CO2/NH3/Flow)
 
-// Global sensor values for LCD rendering
-float currentTC = 25.0f, currentTF = 77.0f, currentHum = 50.0f, currentHI = 25.0f;
-float currentNH3 = 0.0f, currentMQ137V = 0.0f;
-float currentFlowHz = 0.0f;
-
 // =====================================================================
-//  Helpers
+//  Helpers & Status Classifications
 // =====================================================================
 String uptime() {
     unsigned long s = millis() / 1000;
@@ -100,13 +120,17 @@ String uptime() {
     return String(b);
 }
 
+void printLine(char c = '-') {
+    for (int i = 0; i < 60; i++) Serial.print(c);
+    Serial.println();
+}
+
 int avgADC(int pin, int n = 10) {
     long sum = 0;
-    for (int i = 0; i < n; i++) { sum += analogRead(pin); delay(5); }
+    for (int i = 0; i < n; i++) { sum += analogRead(pin); delay(2); }
     return (int)(sum / n);
 }
 
-// Full Status Labels (for Serial Monitor & ThingsBoard)
 const char* nh3Label(float p, bool w) {
     if (!w)         return "WARMING UP";
     if (p <   5.0f) return "CLEAN";
@@ -115,6 +139,7 @@ const char* nh3Label(float p, bool w) {
     if (p < 100.0f) return "HIGH";
     return                  "DANGER";
 }
+
 const char* flowLabel(float hz) {
     if (hz == 0)    return "NO FLOW";
     if (hz < 5.0f)  return "VERY LOW";
@@ -122,6 +147,7 @@ const char* flowLabel(float hz) {
     if (hz < 35.0f) return "MODERATE";
     return                  "HIGH";
 }
+
 const char* co2Label(uint16_t v) {
     if (v <  600)   return "EXCELLENT";
     if (v < 1000)   return "GOOD";
@@ -129,6 +155,7 @@ const char* co2Label(uint16_t v) {
     if (v < 2500)   return "POOR";
     return                  "HAZARDOUS";
 }
+
 const char* tvocLabel(uint16_t v) {
     if (v <  220)   return "LOW";
     if (v <  660)   return "MODERATE";
@@ -136,7 +163,6 @@ const char* tvocLabel(uint16_t v) {
     return                  "VERY HIGH";
 }
 
-// Concise Status Labels for 2004 Character LCD (20-column limit)
 const char* shortCo2Label(uint16_t v) {
     if (v <  600)   return "EXCL";
     if (v < 1000)   return "GOOD";
@@ -160,22 +186,6 @@ const char* shortFlowLabel(float hz) {
     if (hz < 15.0f) return "LOW  ";
     if (hz < 35.0f) return "MODR ";
     return                 "HIGH ";
-}
-
-// =====================================================================
-//  WiFi
-// =====================================================================
-void connectWiFi() {
-    if (WiFi.status() == WL_CONNECTED) return;
-    WiFi.disconnect(true); delay(200);
-    WiFi.mode(WIFI_STA);
-    WiFi.begin(WIFI_SSID, WIFI_PASS);
-    int n = 0;
-    while (WiFi.status() != WL_CONNECTED && n++ < 20) {
-        delay(500); Serial.print('.');
-    }
-    Serial.println(WiFi.status() == WL_CONNECTED
-        ? " Connected!" : " Pending...");
 }
 
 // =====================================================================
@@ -209,24 +219,23 @@ bool initCCS() {
 }
 
 // =====================================================================
-//  ThingsBoard — send all 16 keys
+//  ThingsBoard Telemetry Dispatch
 // =====================================================================
 void sendTelemetry(float tC, float tF, float hum, float hi,
                    float nh3, const char* nh3Lv, float mq137V, bool alert,
                    unsigned long pulses, float flowHz, float vol, const char* flowLv,
                    uint16_t eco2, const char* co2Lv, uint16_t tvoc, const char* tvocLv) {
-    if (WiFi.status() != WL_CONNECTED) {
-        Serial.println(F(" Skipped (WiFi offline)"));
-        return;
-    }
+    if (WiFi.status() != WL_CONNECTED) return;
+
+    WiFiClientSecure client;
+    client.setInsecure();
+    HTTPClient https;
+    https.setTimeout(8000);
+
     String url = String(TB_HOST) + "/api/v1/" + TB_TOKEN + "/telemetry";
-    WiFiClientSecure client; client.setInsecure();
-    HTTPClient https; https.setTimeout(8000);
-    if (!https.begin(client, url)) {
-        Serial.println(F(" Error starting HTTPS"));
-        return;
-    }
+    https.begin(client, url);
     https.addHeader("Content-Type", "application/json");
+
     String p = "{";
     p += "\"temperature\":"    + String(tC, 1);
     p += ",\"temperatureF\":"  + String(tF, 1);
@@ -245,21 +254,11 @@ void sendTelemetry(float tC, float tF, float hum, float hi,
     p += ",\"tvoc\":"          + String(tvoc);
     p += ",\"tvocStatus\":\""  + String(tvocLv) + "\"";
     p += "}";
-    int code = https.POST(p);
-    if (code > 0) {
-        Serial.printf(" HTTP %d\n", code);
-    } else {
-        Serial.printf(" Failed: %s\n", https.errorToString(code).c_str());
-    }
-    https.end();
-}
 
-// =====================================================================
-//  Print separator line (60 chars)
-// =====================================================================
-void printLine(char c = '-') {
-    for (int i = 0; i < 60; i++) Serial.print(c);
-    Serial.println();
+    int code = https.POST(p);
+    lastTbHttpCode = code;
+    if (code > 0) tbSendCount++;
+    https.end();
 }
 
 // =====================================================================
@@ -270,24 +269,32 @@ void updateLCD() {
     char buf[21];
 
     if (lcdScreenPage == 0) {
-        // =============================================================
-        //  SCREEN 1: Ambient Environment (Temp, Humidity, Heat Index)
-        // =============================================================
+        // SCREEN 1: Ambient Environment (Temp, Humidity, Heat Index)
         snprintf(buf, sizeof(buf), "-- AIR QUALITY [1/2]");
         lcd.setCursor(0, 0); lcd.print(buf);
 
-        snprintf(buf, sizeof(buf), "Temp    : %5.1f C   ", currentTC);
+        if (currentDhtOk) {
+            snprintf(buf, sizeof(buf), "Temp    : %5.1f C   ", currentTC);
+        } else {
+            snprintf(buf, sizeof(buf), "Temp    : --.- C   ");
+        }
         lcd.setCursor(0, 1); lcd.print(buf);
 
-        snprintf(buf, sizeof(buf), "Humidity: %5.1f %%   ", currentHum);
+        if (currentDhtOk) {
+            snprintf(buf, sizeof(buf), "Humidity: %5.1f %%   ", currentHum);
+        } else {
+            snprintf(buf, sizeof(buf), "Humidity: --.- %%   ");
+        }
         lcd.setCursor(0, 2); lcd.print(buf);
 
-        snprintf(buf, sizeof(buf), "Heat Idx: %5.1f C   ", currentHI);
+        if (currentDhtOk) {
+            snprintf(buf, sizeof(buf), "Heat Idx: %5.1f C   ", currentHI);
+        } else {
+            snprintf(buf, sizeof(buf), "Heat Idx: --.- C   ");
+        }
         lcd.setCursor(0, 3); lcd.print(buf);
     } else {
-        // =============================================================
-        //  SCREEN 2: Gas & Flow (CO2, NH3, Air Flow)
-        // =============================================================
+        // SCREEN 2: Gas & Flow (CO2, NH3, Air Flow)
         snprintf(buf, sizeof(buf), "-- GAS & FLOW  [2/2]");
         lcd.setCursor(0, 0); lcd.print(buf);
 
@@ -313,6 +320,684 @@ void updateLCD() {
 }
 
 // =====================================================================
+//  Authentication Management
+// =====================================================================
+const char* AUTH_COOKIE_NAME = "m1_auth";
+const char* AUTH_TOKEN_VALUE = "valid_m1_session_786";
+
+bool isClientAuthenticated() {
+    if (server.hasHeader("Cookie")) {
+        String cookie = server.header("Cookie");
+        if (cookie.indexOf(String(AUTH_COOKIE_NAME) + "=" + String(AUTH_TOKEN_VALUE)) != -1) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// =====================================================================
+//  HTML Web Pages (Login Screen & Monitoring Dashboard)
+// =====================================================================
+
+const char LOGIN_HTML[] PROGMEM = R"rawliteral(
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Module 1 Login | ESP32-S3 Air Quality Hub</title>
+    <style>
+        :root {
+            --bg: #0f172a;
+            --card-bg: #1e293b;
+            --primary: #38bdf8;
+            --primary-hover: #0284c7;
+            --text-main: #f8fafc;
+            --text-muted: #94a3b8;
+            --border: #334155;
+            --danger: #ef4444;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+        body { background: var(--bg); color: var(--text-main); min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 16px; }
+        .login-card {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 32px 24px;
+            width: 100%;
+            max-width: 380px;
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 8px 10px -6px rgba(0, 0, 0, 0.5);
+            text-align: center;
+        }
+        .icon { font-size: 3rem; margin-bottom: 12px; }
+        h1 { font-size: 1.4rem; font-weight: 700; color: var(--text-main); margin-bottom: 6px; }
+        p.sub { font-size: 0.85rem; color: var(--text-muted); margin-bottom: 24px; }
+        .form-group { text-align: left; margin-bottom: 16px; }
+        label { display: block; font-size: 0.8rem; font-weight: 600; color: var(--text-muted); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px; }
+        input[type="text"], input[type="password"] {
+            width: 100%;
+            padding: 12px 14px;
+            background: #0f172a;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text-main);
+            font-size: 0.95rem;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+        input:focus { border-color: var(--primary); }
+        .btn {
+            width: 100%;
+            padding: 12px;
+            background: var(--primary);
+            color: #0f172a;
+            border: none;
+            border-radius: 8px;
+            font-size: 1rem;
+            font-weight: 700;
+            cursor: pointer;
+            margin-top: 8px;
+            transition: background 0.2s;
+        }
+        .btn:hover { background: var(--primary-hover); color: #fff; }
+        .error-msg {
+            color: var(--danger);
+            font-size: 0.82rem;
+            margin-top: 12px;
+            display: none;
+            font-weight: 600;
+        }
+        .hint {
+            margin-top: 20px;
+            font-size: 0.75rem;
+            color: #64748b;
+        }
+    </style>
+</head>
+<body>
+    <div class="login-card">
+        <div class="icon">💨</div>
+        <h1>ESP32-S3 Module 1</h1>
+        <p class="sub">Air Quality, Gas & Flow Monitor</p>
+
+        <form id="loginForm" onsubmit="handleLogin(event)">
+            <div class="form-group">
+                <label for="username">Username</label>
+                <input type="text" id="username" placeholder="admin" required autofocus>
+            </div>
+            <div class="form-group">
+                <label for="password">Password</label>
+                <input type="password" id="password" placeholder="••••••••" required>
+            </div>
+            <button type="submit" class="btn" id="submitBtn">Sign In</button>
+            <div class="error-msg" id="errMsg">❌ Invalid username or password</div>
+        </form>
+        <div class="hint">Default Credentials: <b>admin</b> / <b>admin</b></div>
+    </div>
+
+    <script>
+        function handleLogin(e) {
+            e.preventDefault();
+            const u = document.getElementById('username').value.trim();
+            const p = document.getElementById('password').value;
+            const err = document.getElementById('errMsg');
+            const btn = document.getElementById('submitBtn');
+
+            btn.disabled = true;
+            btn.innerText = 'Verifying...';
+            err.style.display = 'none';
+
+            const data = new URLSearchParams();
+            data.append('user', u);
+            data.append('pass', p);
+
+            fetch('/login', { method: 'POST', body: data })
+                .then(res => {
+                    if (res.ok) {
+                        window.location.href = '/';
+                    } else {
+                        err.style.display = 'block';
+                        btn.disabled = false;
+                        btn.innerText = 'Sign In';
+                    }
+                })
+                .catch(() => {
+                    err.innerText = '❌ Connection error. Try again.';
+                    err.style.display = 'block';
+                    btn.disabled = false;
+                    btn.innerText = 'Sign In';
+                });
+        }
+    </script>
+</body>
+</html>
+)rawliteral";
+
+const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Module 1 Dashboard | Air Quality & Gas Monitor</title>
+    <style>
+        :root {
+            --bg: #0b1120;
+            --card-bg: #1e293b;
+            --border: #334155;
+            --primary: #38bdf8;
+            --emerald: #10b981;
+            --amber: #f59e0b;
+            --purple: #a855f7;
+            --text-main: #f8fafc;
+            --text-muted: #94a3b8;
+            --danger: #ef4444;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+        body { background: var(--bg); color: var(--text-main); min-height: 100vh; padding: 16px; padding-bottom: 40px; }
+        .container { max-width: 900px; margin: 0 auto; }
+        
+        /* Navbar */
+        .navbar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 18px;
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            margin-bottom: 20px;
+        }
+        .nav-brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 1.1rem; }
+        .nav-brand span { color: var(--primary); }
+        .btn-logout {
+            background: #334155;
+            color: #f8fafc;
+            border: none;
+            padding: 6px 14px;
+            border-radius: 8px;
+            font-size: 0.85rem;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .btn-logout:hover { background: var(--danger); }
+
+        /* Status Banner */
+        .banner {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: space-between;
+            align-items: center;
+            background: rgba(56, 189, 248, 0.1);
+            border: 1px solid rgba(56, 189, 248, 0.3);
+            border-radius: 12px;
+            padding: 10px 16px;
+            margin-bottom: 20px;
+            font-size: 0.85rem;
+            gap: 8px;
+        }
+        .banner-pill { display: flex; align-items: center; gap: 6px; }
+        .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--primary); display: inline-block; }
+        .dot.pulse { box-shadow: 0 0 8px var(--primary); animation: pulse 2s infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+        /* Grid */
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+        .card {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 18px;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            position: relative;
+            overflow: hidden;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.2);
+        }
+        .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+        .card-title { font-size: 0.85rem; text-transform: uppercase; font-weight: 700; color: var(--text-muted); letter-spacing: 0.5px; }
+        .card-icon { font-size: 1.4rem; }
+        .card-value { font-size: 2.2rem; font-weight: 800; color: #ffffff; line-height: 1.1; margin-bottom: 6px; }
+        .card-unit { font-size: 1rem; font-weight: 500; color: var(--text-muted); margin-left: 4px; }
+        .card-status { font-size: 0.78rem; font-weight: 600; padding: 3px 8px; border-radius: 6px; width: fit-content; }
+        .status-optimal { background: rgba(16, 185, 129, 0.2); color: var(--emerald); }
+        .status-warn { background: rgba(245, 158, 11, 0.2); color: var(--amber); }
+        .status-info { background: rgba(56, 189, 248, 0.2); color: var(--primary); }
+        .status-purple { background: rgba(168, 85, 247, 0.2); color: var(--purple); }
+        .status-err { background: rgba(239, 68, 68, 0.2); color: var(--danger); }
+
+        .progress-bar {
+            width: 100%;
+            height: 6px;
+            background: #0f172a;
+            border-radius: 3px;
+            margin-top: 10px;
+            overflow: hidden;
+        }
+        .progress-fill { height: 100%; border-radius: 3px; transition: width 0.5s ease; }
+        .fill-blue { background: var(--primary); }
+        .fill-emerald { background: var(--emerald); }
+        .fill-amber { background: var(--amber); }
+        .fill-purple { background: var(--purple); }
+
+        /* Wi-Fi Utility Card */
+        .wifi-section {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 20px;
+        }
+        .wifi-header { font-size: 1.1rem; font-weight: 700; margin-bottom: 14px; display: flex; align-items: center; gap: 8px; }
+        .wifi-grid { display: grid; grid-template-columns: 1fr 1fr auto; gap: 10px; align-items: end; }
+        @media (max-width: 650px) { .wifi-grid { grid-template-columns: 1fr; } }
+        .input-group label { display: block; font-size: 0.75rem; font-weight: 600; color: var(--text-muted); margin-bottom: 5px; text-transform: uppercase; }
+        .input-group input, .input-group select {
+            width: 100%;
+            padding: 10px 12px;
+            background: #0f172a;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: #fff;
+            font-size: 0.9rem;
+            outline: none;
+        }
+        .input-group input:focus { border-color: var(--primary); }
+        .btn-action {
+            padding: 10px 18px;
+            background: var(--primary);
+            color: #0f172a;
+            border: none;
+            border-radius: 8px;
+            font-weight: 700;
+            font-size: 0.9rem;
+            cursor: pointer;
+            white-space: nowrap;
+            height: 41px;
+        }
+        .btn-action:hover { background: #0284c7; color: #fff; }
+        .btn-scan { background: #6366f1; color:#fff; }
+        .btn-scan:hover { background: #4f46e5; }
+        .wifi-status-text { margin-top: 12px; font-size: 0.82rem; color: var(--text-muted); }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Navbar -->
+        <div class="navbar">
+            <div class="nav-brand">💨 <span>Module 1</span> Air Quality Hub</div>
+            <button class="btn-logout" onclick="window.location.href='/logout'">Sign Out</button>
+        </div>
+
+        <!-- Status Banner -->
+        <div class="banner">
+            <div class="banner-pill">
+                <span class="dot pulse"></span>
+                <span><b>AP Mode:</b> ESP32-S3_Air_Quality (192.168.4.1)</span>
+            </div>
+            <div class="banner-pill">
+                <span><b>WiFi STA:</b> <span id="staStatus">Connecting...</span></span>
+            </div>
+            <div class="banner-pill">
+                <span><b>Uptime:</b> <span id="sysUptime">--:--:--</span></span>
+            </div>
+        </div>
+
+        <!-- Live Sensor Grid -->
+        <div class="grid">
+            <!-- 1. Temperature & Humidity -->
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Temperature & Hum</span>
+                    <span class="card-icon">🌡️</span>
+                </div>
+                <div>
+                    <div class="card-value"><span id="valTemp">--.-</span><span class="card-unit">°C</span></div>
+                    <div style="font-size:0.85rem; color:var(--text-muted); margin-bottom:8px;">
+                        Humidity: <b style="color:#fff;" id="valHum">--.-</b> % | HeatIdx: <b style="color:#fff;" id="valHi">--.-</b> °C
+                    </div>
+                </div>
+                <div class="card-status status-info" id="statusDht">DHT11 (GPIO 4)</div>
+            </div>
+
+            <!-- 2. Carbon Dioxide eCO2 -->
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Carbon Dioxide (eCO2)</span>
+                    <span class="card-icon">💨</span>
+                </div>
+                <div>
+                    <div class="card-value"><span id="valEco2">---</span><span class="card-unit">ppm</span></div>
+                    <div class="progress-bar">
+                        <div class="progress-fill fill-emerald" id="barEco2" style="width: 0%;"></div>
+                    </div>
+                </div>
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-top:10px;">
+                    <div class="card-status status-optimal" id="statusEco2">--</div>
+                    <span style="font-size:0.75rem; color:var(--text-muted);" id="ccsStatus">CCS811 (Wire1)</span>
+                </div>
+            </div>
+
+            <!-- 3. Total VOCs (TVOC) -->
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Volatile Organics (TVOC)</span>
+                    <span class="card-icon">🧪</span>
+                </div>
+                <div>
+                    <div class="card-value"><span id="valTvoc">---</span><span class="card-unit">ppb</span></div>
+                    <div class="progress-bar">
+                        <div class="progress-fill fill-purple" id="barTvoc" style="width: 0%;"></div>
+                    </div>
+                </div>
+                <div class="card-status status-purple" id="statusTvoc" style="margin-top:10px;">Air Purity</div>
+            </div>
+
+            <!-- 4. Ammonia Gas NH3 -->
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Ammonia Gas (NH3)</span>
+                    <span class="card-icon">☣️</span>
+                </div>
+                <div>
+                    <div class="card-value"><span id="valNh3">--.-</span><span class="card-unit">ppm</span></div>
+                    <div style="font-size:0.8rem; color:var(--text-muted); margin-bottom:8px;">Sensor: <span id="valNh3V">--.-</span> V</div>
+                </div>
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <div class="card-status status-optimal" id="statusNh3">--</div>
+                    <span style="font-size:0.75rem; color:var(--text-muted);" id="nh3AlertTxt">MQ-137 (GPIO 1)</span>
+                </div>
+            </div>
+
+            <!-- 5. Air / Water Flow -->
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Flow Rate & Volume</span>
+                    <span class="card-icon">🌊</span>
+                </div>
+                <div>
+                    <div class="card-value"><span id="valFlow">--.-</span><span class="card-unit">Hz</span></div>
+                    <div style="font-size:0.85rem; color:var(--text-muted); margin-bottom:8px;">
+                        Total Volume: <b style="color:#fff;" id="valVol">--.-</b> L
+                    </div>
+                </div>
+                <div class="card-status status-info" id="statusFlow">FS200A (GPIO 5)</div>
+            </div>
+
+            <!-- 6. Cloud Telemetry -->
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">ThingsBoard Cloud</span>
+                    <span class="card-icon">☁️</span>
+                </div>
+                <div>
+                    <div style="font-size:1.1rem; font-weight:700; color:#fff; margin-bottom:4px;">DigitalM Cloud</div>
+                    <div style="font-size:0.8rem; color:var(--text-muted);">Token: 52kqr3ax...</div>
+                </div>
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-top:10px;">
+                    <div class="card-status status-optimal" id="tbStatus">HTTP --</div>
+                    <span style="font-size:0.75rem; color:var(--text-muted);" id="tbCount">Sent: 0</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Wi-Fi Utility Management -->
+        <div class="wifi-section">
+            <div class="wifi-header">📶 Wi-Fi Station Utility & Configuration</div>
+            <div style="margin-bottom:14px; display:flex; gap:10px; align-items:center;">
+                <button class="btn-action btn-scan" id="btnScan" onclick="scanNetworks()">🔍 Scan Available Wi-Fi</button>
+                <span id="scanMsg" style="font-size:0.8rem; color:var(--text-muted);">Click to discover nearby routers</span>
+            </div>
+            
+            <div class="wifi-grid">
+                <div class="input-group">
+                    <label for="wifiSsid">Network SSID</label>
+                    <input type="text" id="wifiSsid" placeholder="e.g. Home_WiFi">
+                </div>
+                <div class="input-group">
+                    <label for="wifiPass">Password</label>
+                    <input type="password" id="wifiPass" placeholder="••••••••">
+                </div>
+                <div style="display:flex; gap:8px;">
+                    <button class="btn-action" onclick="saveWiFi()">💾 Connect & Save</button>
+                    <button class="btn-action" style="background:#475569; color:#fff;" onclick="resetWiFi()">🗑️ Reset</button>
+                </div>
+            </div>
+            <div class="wifi-status-text" id="wifiFeedback">ESP32-S3 will auto-reconnect to saved router credentials upon boot.</div>
+        </div>
+    </div>
+
+    <script>
+        function updateDashboard() {
+            fetch('/data')
+                .then(r => {
+                    if (r.status === 401) { window.location.href = '/'; return; }
+                    return r.json();
+                })
+                .then(d => {
+                    if (!d) return;
+                    document.getElementById('sysUptime').innerText = d.uptime;
+                    document.getElementById('staStatus').innerText = d.wifiSta + (d.ip ? ' (' + d.ip + ')' : '');
+
+                    // Temp & Hum
+                    document.getElementById('valTemp').innerText = d.temp.toFixed(1);
+                    document.getElementById('valHum').innerText = d.hum.toFixed(1);
+                    document.getElementById('valHi').innerText = d.hi.toFixed(1);
+
+                    // eCO2
+                    document.getElementById('valEco2').innerText = d.eco2;
+                    document.getElementById('statusEco2').innerText = d.eco2Status;
+                    document.getElementById('barEco2').style.width = Math.min((d.eco2 / 2000) * 100, 100) + '%';
+                    document.getElementById('ccsStatus').innerText = d.ccsOk ? 'Wire1 (ONLINE)' : 'OFFLINE';
+                    document.getElementById('ccsStatus').style.color = d.ccsOk ? 'var(--emerald)' : 'var(--danger)';
+
+                    // TVOC
+                    document.getElementById('valTvoc').innerText = d.tvoc;
+                    document.getElementById('statusTvoc').innerText = d.tvocStatus;
+                    document.getElementById('barTvoc').style.width = Math.min((d.tvoc / 1000) * 100, 100) + '%';
+
+                    // NH3
+                    document.getElementById('valNh3').innerText = d.nh3.toFixed(1);
+                    document.getElementById('valNh3V').innerText = d.nh3V.toFixed(2);
+                    document.getElementById('statusNh3').innerText = d.nh3Status;
+                    if(d.nh3Alert) {
+                        document.getElementById('nh3AlertTxt').innerText = '⚠️ GAS ALERT!';
+                        document.getElementById('nh3AlertTxt').style.color = 'var(--danger)';
+                    } else {
+                        document.getElementById('nh3AlertTxt').innerText = 'MQ-137 (Normal)';
+                        document.getElementById('nh3AlertTxt').style.color = 'var(--text-muted)';
+                    }
+
+                    // Flow
+                    document.getElementById('valFlow').innerText = d.flowHz.toFixed(1);
+                    document.getElementById('valVol').innerText = d.vol.toFixed(2);
+                    document.getElementById('statusFlow').innerText = d.flowStatus;
+
+                    // ThingsBoard
+                    document.getElementById('tbStatus').innerText = d.tbHttp > 0 ? 'HTTP ' + d.tbHttp : 'Pending';
+                    document.getElementById('tbStatus').className = (d.tbHttp === 200) ? 'card-status status-optimal' : 'card-status status-warn';
+                    document.getElementById('tbCount').innerText = 'Sent: ' + d.tbSent;
+                })
+                .catch(e => console.log('Poll error:', e));
+        }
+
+        function scanNetworks() {
+            const btn = document.getElementById('btnScan');
+            const msg = document.getElementById('scanMsg');
+            btn.disabled = true;
+            btn.innerText = 'Scanning...';
+            msg.innerText = 'Searching 2.4GHz spectrum...';
+
+            fetch('/scan')
+                .then(r => r.json())
+                .then(list => {
+                    btn.disabled = false;
+                    btn.innerText = '🔍 Scan Available Wi-Fi';
+                    if (!list || list.length === 0) {
+                        msg.innerText = 'No networks found.';
+                        return;
+                    }
+                    msg.innerHTML = 'Found ' + list.length + ' networks. Select: <select id="netSelect" onchange="document.getElementById(\'wifiSsid\').value=this.value" style="padding:4px 8px; background:#0f172a; color:#fff; border:1px solid #334155; border-radius:6px; margin-left:6px;"><option value="">-- Choose SSID --</option>' + 
+                        list.map(n => '<option value="' + n.ssid + '">' + n.ssid + ' (' + n.rssi + ' dBm)</option>').join('') + '</select>';
+                })
+                .catch(() => {
+                    btn.disabled = false;
+                    btn.innerText = '🔍 Scan Available Wi-Fi';
+                    msg.innerText = 'Scan failed.';
+                });
+        }
+
+        function saveWiFi() {
+            const s = document.getElementById('wifiSsid').value.trim();
+            const p = document.getElementById('wifiPass').value;
+            const fb = document.getElementById('wifiFeedback');
+            if (!s) { alert('Please enter an SSID'); return; }
+            fb.innerText = 'Connecting to ' + s + '...';
+
+            const body = new URLSearchParams();
+            body.append('ssid', s);
+            body.append('pass', p);
+
+            fetch('/savewifi', { method: 'POST', body: body })
+                .then(r => r.text())
+                .then(txt => {
+                    fb.innerText = '✅ ' + txt;
+                })
+                .catch(() => { fb.innerText = '❌ Error saving Wi-Fi'; });
+        }
+
+        function resetWiFi() {
+            if (!confirm('Clear saved Wi-Fi credentials?')) return;
+            fetch('/resetwifi', { method: 'POST' })
+                .then(r => r.text())
+                .then(txt => {
+                    document.getElementById('wifiFeedback').innerText = '⚠️ ' + txt;
+                });
+        }
+
+        // Auto update every 2 seconds
+        updateDashboard();
+        setInterval(updateDashboard, 2000);
+    </script>
+</body>
+</html>
+)rawliteral";
+
+// =====================================================================
+//  WebServer Routes & Handlers
+// =====================================================================
+
+void handleRoot() {
+    if (!isClientAuthenticated()) {
+        server.send(200, "text/html", LOGIN_HTML);
+    } else {
+        server.send(200, "text/html", DASHBOARD_HTML);
+    }
+}
+
+void handleLogin() {
+    String u = server.arg("user");
+    String p = server.arg("pass");
+
+    if (u == auth_user && p == auth_pass) {
+        server.sendHeader("Set-Cookie", String(AUTH_COOKIE_NAME) + "=" + String(AUTH_TOKEN_VALUE) + "; Path=/; Max-Age=86400");
+        server.send(200, "text/plain", "OK");
+    } else {
+        server.send(401, "text/plain", "Invalid Credentials");
+    }
+}
+
+void handleLogout() {
+    server.sendHeader("Set-Cookie", String(AUTH_COOKIE_NAME) + "=logged_out; Path=/; Max-Age=0");
+    server.sendHeader("Location", "/");
+    server.send(302, "text/plain", "");
+}
+
+void handleData() {
+    if (!isClientAuthenticated()) {
+        server.send(401, "application/json", "{\"error\":\"Unauthorized\"}");
+        return;
+    }
+
+    String json = "{";
+    json += "\"uptime\":\""       + uptime() + "\",";
+    json += "\"wifiSta\":\""      + String(WiFi.status() == WL_CONNECTED ? "Connected" : "Disconnected") + "\",";
+    json += "\"ip\":\""           + (WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : "") + "\",";
+    json += "\"temp\":"           + String(currentTC, 1) + ",";
+    json += "\"tempF\":"          + String(currentTF, 1) + ",";
+    json += "\"hum\":"            + String(currentHum, 1) + ",";
+    json += "\"hi\":"             + String(currentHI, 1) + ",";
+    json += "\"eco2\":"           + String(ccsECO2) + ",";
+    json += "\"eco2Status\":\""   + String(co2Label(ccsECO2)) + "\",";
+    json += "\"tvoc\":"           + String(ccsTVOC) + ",";
+    json += "\"tvocStatus\":\""   + String(tvocLabel(ccsTVOC)) + "\",";
+    json += "\"ccsOk\":"          + String(ccsOK ? "true" : "false") + ",";
+    json += "\"nh3\":"            + String(currentNH3, 1) + ",";
+    json += "\"nh3V\":"           + String(currentMQ137V, 3) + ",";
+    json += "\"nh3Status\":\""    + String(nh3Label(currentNH3, mq137Warmed)) + "\",";
+    json += "\"nh3Alert\":"       + String(currentNH3Alert ? "true" : "false") + ",";
+    json += "\"flowHz\":"         + String(currentFlowHz, 2) + ",";
+    json += "\"vol\":"            + String(totalVolume, 2) + ",";
+    json += "\"flowStatus\":\""   + String(flowLabel(currentFlowHz)) + "\",";
+    json += "\"tbHttp\":"         + String(lastTbHttpCode) + ",";
+    json += "\"tbSent\":"         + String(tbSendCount);
+    json += "}";
+
+    server.send(200, "application/json", json);
+}
+
+void handleScan() {
+    if (!isClientAuthenticated()) {
+        server.send(401, "application/json", "[]");
+        return;
+    }
+    int n = WiFi.scanNetworks();
+    String json = "[";
+    for (int i = 0; i < n; i++) {
+        if (i > 0) json += ",";
+        json += "{\"ssid\":\"" + WiFi.SSID(i) + "\",\"rssi\":" + String(WiFi.RSSI(i)) + "}";
+    }
+    json += "]";
+    server.send(200, "application/json", json);
+}
+
+void handleSaveWiFi() {
+    if (!isClientAuthenticated()) {
+        server.send(401, "text/plain", "Unauthorized");
+        return;
+    }
+    if (server.hasArg("ssid")) {
+        String s = server.arg("ssid");
+        String p = server.arg("pass");
+        prefWifi.putString("ssid", s);
+        prefWifi.putString("pass", p);
+        wifi_ssid = s;
+        wifi_pass = p;
+
+        WiFi.begin(wifi_ssid.c_str(), wifi_pass.c_str());
+        server.send(200, "text/plain", "Credentials saved! Connecting to " + s);
+        return;
+    }
+    server.send(400, "text/plain", "Missing SSID");
+}
+
+void handleResetWiFi() {
+    if (!isClientAuthenticated()) {
+        server.send(401, "text/plain", "Unauthorized");
+        return;
+    }
+    prefWifi.remove("ssid");
+    prefWifi.remove("pass");
+    WiFi.disconnect();
+    server.send(200, "text/plain", "Wi-Fi credentials cleared.");
+}
+
+// =====================================================================
 //  Setup
 // =====================================================================
 void setup() {
@@ -320,12 +1005,12 @@ void setup() {
     delay(1000);
 
     printLine('=');
-    Serial.println(F("  ESP32-S3 MODULE 1: AIR QUALITY, GAS & 2004 LCD SYSTEM"));
+    Serial.println(F("  ESP32-S3 MODULE 1: AIR QUALITY, GAS & FLOW SYSTEM"));
     printLine('=');
     Serial.println(F("  Sensors: DHT11 (GPIO 4) | MQ-137 (GPIO 1/2)"));
     Serial.println(F("           FS200A (GPIO 5) | CCS811 (Wire1: SDA=17, SCL=16)"));
     Serial.println(F("  Display: 2004 I2C LCD (Wire: SDA=15, SCL=18)"));
-    Serial.println(F("  Cloud  : ThingsBoard"));
+    Serial.println(F("  Utility: WebServer AP (192.168.4.1) + Secure Login Dashboard"));
     printLine('=');
 
     analogReadResolution(12);
@@ -351,7 +1036,6 @@ void setup() {
     pinMode(LCD_SCL_PIN, INPUT_PULLUP);
     Wire.begin(LCD_SDA_PIN, LCD_SCL_PIN);
     Wire.setTimeOut(25);
-    Serial.print(F("  [..] 2004 I2C LCD (Dedicated SDA=15, SCL=18)... "));
     byte lcdAddr = 0;
     Wire.beginTransmission(0x27);
     if (Wire.endTransmission() == 0) lcdAddr = 0x27;
@@ -364,32 +1048,14 @@ void setup() {
         lcd.init();
         lcd.backlight();
         lcd.clear();
-
-        // 🌟 Welcome Splash Screen
-        lcd.setCursor(0, 0);
-        lcd.print(F("===================="));
-        lcd.setCursor(0, 1);
-        lcd.print(F("    Welcome to      "));
-        lcd.setCursor(0, 2);
-        lcd.print(F("     Module-1       "));
-        lcd.setCursor(0, 3);
-        lcd.print(F("===================="));
+        lcd.setCursor(0, 0); lcd.print(F("===================="));
+        lcd.setCursor(0, 1); lcd.print(F("    Welcome to      "));
+        lcd.setCursor(0, 2); lcd.print(F("  Module-1 Monitor  "));
+        lcd.setCursor(0, 3); lcd.print(F("===================="));
         lcd_available = true;
-        Serial.printf("ONLINE at 0x%02X [OK]\n", lcdAddr);
-        delay(2500); // Show Welcome message clearly for 2.5 seconds
-
-        // System Initialization Status
-        lcd.clear();
-        lcd.setCursor(0, 0);
-        lcd.print(F("ESP32 MONITOR SYSTEM"));
-        lcd.setCursor(0, 1);
-        lcd.print(F("MODULE 1: AIR QUALITY"));
-        lcd.setCursor(0, 2);
-        lcd.print(F("WiFi Connecting...  "));
-        lcd.setCursor(0, 3);
-        lcd.print(F("Please wait...      "));
+        Serial.printf("  [OK] 2004 LCD Online at 0x%02X\n", lcdAddr);
     } else {
-        Serial.println(F("OFFLINE (Check SDA=15, SCL=18, VCC=5V, GND)"));
+        Serial.println(F("  [..] 2004 LCD Not Detected on Wire (SDA=15, SCL=18)"));
     }
 
     // 5. CCS811 on I2C Bus 1 (Wire1: SDA=17, SCL=16)
@@ -397,26 +1063,53 @@ void setup() {
     pinMode(CCS811_SCL_PIN, INPUT_PULLUP);
     Wire1.begin(CCS811_SDA_PIN, CCS811_SCL_PIN, 50000);
     Wire1.setTimeOut(500);
-    Serial.print(F("  [..] CCS811   -> Wire1 SDA=17 SCL=16 ... "));
     if (initCCS()) {
-        Serial.println(F("ONLINE [OK]"));
+        Serial.println(F("  [OK] CCS811   -> Wire1 SDA=17 SCL=16 [ONLINE]"));
     } else {
-        Serial.println(F("OFFLINE - Check WAK->GND, RST->3.3V, SDA=17, SCL=16"));
+        Serial.println(F("  [..] CCS811   -> OFFLINE (Check WAK->GND, RST->3.3V, SDA=17, SCL=16)"));
     }
 
-    // 6. WiFi
-    Serial.print(F("  [..] WiFi     Connecting"));
-    connectWiFi();
+    // 6. Preferences for WiFi & Auth
+    prefWifi.begin("m1-wifi", false);
+    wifi_ssid = prefWifi.getString("ssid", "Meeting Room");
+    wifi_pass = prefWifi.getString("pass", "Shahid786$$");
+
+    prefAuth.begin("m1-auth", false);
+    auth_user = prefAuth.getString("user", "admin");
+    auth_pass = prefAuth.getString("pass", "admin");
+
+    // 7. Dual WiFi Mode (AP + STA)
+    WiFi.mode(WIFI_AP_STA);
+    WiFi.softAP(AP_SSID, AP_PASS);
+    Serial.printf("  [OK] Access Point Active: SSID '%s' (IP: 192.168.4.1)\n", AP_SSID);
+
+    if (wifi_ssid.length() > 0) {
+        Serial.printf("  [..] Connecting to Station SSID '%s'...\n", wifi_ssid.c_str());
+        WiFi.begin(wifi_ssid.c_str(), wifi_pass.c_str());
+    }
+
+    if (MDNS.begin("esp32airquality")) {
+        MDNS.addService("http", "tcp", 80);
+    }
+
+    // 8. Configure Web Server Headers & Routes
+    const char* headerkeys[] = {"Cookie"};
+    size_t headerkeyssize = sizeof(headerkeys) / sizeof(char*);
+    server.collectHeaders(headerkeys, headerkeyssize);
+
+    server.on("/", HTTP_GET, handleRoot);
+    server.on("/login", HTTP_POST, handleLogin);
+    server.on("/logout", HTTP_GET, handleLogout);
+    server.on("/data", HTTP_GET, handleData);
+    server.on("/scan", HTTP_GET, handleScan);
+    server.on("/savewifi", HTTP_POST, handleSaveWiFi);
+    server.on("/resetwifi", HTTP_POST, handleResetWiFi);
+
+    server.begin();
+    Serial.println(F("  [OK] WebServer Started on Port 80 (Login Protected)"));
+    printLine('=');
 
     if (lcd_available) {
-        lcd.setCursor(0, 2);
-        if (WiFi.status() == WL_CONNECTED) {
-            lcd.print(F("WiFi: Connected!    "));
-        } else {
-            lcd.print(F("WiFi: Offline       "));
-        }
-        lcd.setCursor(0, 3);
-        lcd.print(F("Starting System...  "));
         delay(1200);
         lcd.clear();
         updateLCD();
@@ -424,21 +1117,20 @@ void setup() {
 
     lastLog = millis();
     lastLcdSwitch = millis();
-
-    printLine('=');
-    Serial.println();
 }
 
 // =====================================================================
 //  Loop
 // =====================================================================
 void loop() {
-    connectWiFi();
+    // 1. Process Incoming HTTP Clients Immediately
+    server.handleClient();
+
     if (!ccsOK) initCCS();
 
     unsigned long now = millis();
 
-    // 1. Read sensors & send telemetry every 3 seconds (INTERVAL)
+    // 2. Read sensors & send telemetry every 3 seconds (INTERVAL)
     if (now - lastLog >= INTERVAL) {
         lastLog = now;
         loopCount++;
@@ -447,6 +1139,7 @@ void loop() {
         noInterrupts();
         unsigned long pulses = flowPulses; flowPulses = 0;
         interrupts();
+        totalFlowPulses += pulses;
         currentFlowHz = pulses / (INTERVAL / 1000.0f);
         totalVolume  += pulses / PULSES_PER_L;
 
@@ -454,7 +1147,12 @@ void loop() {
         float hum  = dht.readHumidity();
         float tC   = dht.readTemperature();
         float tF   = dht.readTemperature(true);
-        if (isnan(hum) || isnan(tC)) { hum = 50; tC = 25; tF = 77; }
+        if (isnan(hum) || isnan(tC)) {
+            hum = 50.0f; tC = 25.0f; tF = 77.0f;
+            currentDhtOk = false;
+        } else {
+            currentDhtOk = true;
+        }
         float hi   = dht.computeHeatIndex(tC, hum, false);
         currentHum = hum;
         currentTC  = tC;
@@ -467,6 +1165,7 @@ void loop() {
         bool  alert  = (digitalRead(MQ137_DO) == LOW);
         currentNH3   = nh3;
         currentMQ137V= mq137V;
+        currentNH3Alert = alert;
 
         // ---- 4. CCS811 ----
         if (ccsOK) {
@@ -477,68 +1176,17 @@ void loop() {
             }
         }
 
-        // =====================================================================
-        //  Professional Serial Output
-        // =====================================================================
-        Serial.println();
-        printLine('=');
-        Serial.printf("  READING #%-4lu  |  UPTIME: %s  |  WiFi: %s\n",
-            loopCount, uptime().c_str(),
-            WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString().c_str() : "Connecting...");
-        printLine('=');
+        // Serial Output
+        Serial.printf("[M1 #%lu] T:%.1fC | H:%.1f%% | eCO2:%u (%s) | NH3:%.1f (%s) | Flow:%.1fHz | WiFi:%s\n",
+                      loopCount, currentTC, currentHum, ccsECO2, co2Label(ccsECO2),
+                      currentNH3, nh3Label(currentNH3, mq137Warmed), currentFlowHz,
+                      WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString().c_str() : "AP-Only");
 
-        // DHT11
-        Serial.println(F("  TEMPERATURE & HUMIDITY  [DHT11 - GPIO 4]"));
-        printLine();
-        Serial.printf("    Temperature  :  %5.1f C   (%5.1f F)\n", tC, tF);
-        Serial.printf("    Humidity     :  %5.1f %%\n", hum);
-        Serial.printf("    Heat Index   :  %5.1f C\n", hi);
-        printLine();
-
-        // MQ-137
-        Serial.println(F("  AMMONIA GAS  [MQ-137 - GPIO 1/2]"));
-        printLine();
-        Serial.printf("    NH3 Level    :  %6.1f ppm   [%s]\n",
-                      nh3, nh3Label(nh3, mq137Warmed));
-        Serial.printf("    Voltage      :  %6.3f V\n", mq137V);
-        Serial.printf("    DO Alert     :  %s\n", alert ? "YES - THRESHOLD EXCEEDED!" : "No");
-        if (!mq137Warmed) {
-            unsigned long remain = (MQ137_WARMUP > (now - mq137WarmStart))
-                                 ? (MQ137_WARMUP - (now - mq137WarmStart)) / 1000 : 0;
-            Serial.printf("    Warm-up      :  %lu seconds remaining\n", remain);
-        }
-        printLine();
-
-        // FS200A
-        Serial.println(F("  FLOW SENSOR  [FS200A - GPIO 5]"));
-        printLine();
-        Serial.printf("    Frequency    :  %6.2f Hz\n", currentFlowHz);
-        Serial.printf("    Total Volume :  %6.2f L-eq\n", totalVolume);
-        Serial.printf("    Status       :  %s\n", flowLabel(currentFlowHz));
-        printLine();
-
-        // CCS811
-        Serial.printf("  CO2 & TVOC  [CCS811 - Wire1 SDA=17 SCL=16]  %s\n",
-                      ccsOK ? "" : "  [OFFLINE]");
-        printLine();
-        if (ccsOK) {
-            Serial.printf("    eCO2         :  %5u ppm   [%s]\n",
-                          ccsECO2, co2Label(ccsECO2));
-            Serial.printf("    TVOC         :  %5u ppb   [%s]\n",
-                          ccsTVOC, tvocLabel(ccsTVOC));
-        } else {
-            Serial.println(F("    Check: WAK->GND, RST->3.3V, SDA=17, SCL=16"));
-        }
-        printLine();
-
-        // ThingsBoard
-        Serial.print(F("  CLOUD -> ThingsBoard  (16 keys) ..."));
-        sendTelemetry(tC, tF, hum, hi,
-                      nh3, nh3Label(nh3, mq137Warmed), mq137V, alert,
+        // Send ThingsBoard Telemetry
+        sendTelemetry(currentTC, currentTF, currentHum, currentHI,
+                      currentNH3, nh3Label(currentNH3, mq137Warmed), currentMQ137V, currentNH3Alert,
                       pulses, currentFlowHz, totalVolume, flowLabel(currentFlowHz),
                       ccsECO2, co2Label(ccsECO2), ccsTVOC, tvocLabel(ccsTVOC));
-
-        printLine('=');
 
         // Update live screen numbers
         if (lcd_available) {
@@ -546,7 +1194,7 @@ void loop() {
         }
     }
 
-    // 2. Rotate LCD screen page every 5 seconds (5000ms)
+    // 3. Rotate LCD screen page every 5 seconds (5000ms)
     if (lcd_available) {
         if (now - lastLcdSwitch >= LCD_PAGE_INTERVAL) {
             lastLcdSwitch = now;
@@ -555,6 +1203,4 @@ void loop() {
             updateLCD();
         }
     }
-
-    delay(50);
 }
