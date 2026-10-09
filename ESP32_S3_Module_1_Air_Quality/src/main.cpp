@@ -221,10 +221,10 @@ bool initCCS() {
 // =====================================================================
 //  ThingsBoard Telemetry Dispatch
 // =====================================================================
-void sendTelemetry(float tC, float tF, float hum, float hi,
+void sendTelemetry(float tC, float tF, float hum, float hi, bool dhtOk,
                    float nh3, const char* nh3Lv, float mq137V, bool alert,
                    unsigned long pulses, float flowHz, float vol, const char* flowLv,
-                   uint16_t eco2, const char* co2Lv, uint16_t tvoc, const char* tvocLv) {
+                   uint16_t eco2, const char* co2Lv, uint16_t tvoc, const char* tvocLv, bool ccsOk) {
     if (WiFi.status() != WL_CONNECTED) return;
 
     WiFiClientSecure client;
@@ -237,10 +237,14 @@ void sendTelemetry(float tC, float tF, float hum, float hi,
     https.addHeader("Content-Type", "application/json");
 
     String p = "{";
-    p += "\"temperature\":"    + String(tC, 1);
-    p += ",\"temperatureF\":"  + String(tF, 1);
-    p += ",\"humidity\":"      + String(hum, 1);
-    p += ",\"heatIndex\":"     + String(hi, 1);
+    if (dhtOk) {
+        p += "\"temperature\":"    + String(tC, 1);
+        p += ",\"temperatureF\":"  + String(tF, 1);
+        p += ",\"humidity\":"      + String(hum, 1);
+        p += ",\"heatIndex\":"     + String(hi, 1);
+    } else {
+        p += "\"temperatureStatus\":\"OFFLINE\"";
+    }
     p += ",\"nh3PPM\":"        + String(nh3, 1);
     p += ",\"nh3Level\":\""    + String(nh3Lv) + "\"";
     p += ",\"mq137V\":"        + String(mq137V, 3);
@@ -249,10 +253,15 @@ void sendTelemetry(float tC, float tF, float hum, float hi,
     p += ",\"flowHz\":"        + String(flowHz, 2);
     p += ",\"flowVolume\":"    + String(vol, 2);
     p += ",\"flowStatus\":\""  + String(flowLv) + "\"";
-    p += ",\"eCO2\":"          + String(eco2);
-    p += ",\"eco2Status\":\""  + String(co2Lv) + "\"";
-    p += ",\"tvoc\":"          + String(tvoc);
-    p += ",\"tvocStatus\":\""  + String(tvocLv) + "\"";
+    if (ccsOk) {
+        p += ",\"eCO2\":"          + String(eco2);
+        p += ",\"eco2Status\":\""  + String(co2Lv) + "\"";
+        p += ",\"tvoc\":"          + String(tvoc);
+        p += ",\"tvocStatus\":\""  + String(tvocLv) + "\"";
+    } else {
+        p += ",\"eco2Status\":\"OFFLINE\"";
+        p += ",\"tvocStatus\":\"OFFLINE\"";
+    }
     p += "}";
 
     int code = https.POST(p);
@@ -785,21 +794,49 @@ const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(
                     document.getElementById('staStatus').innerText = d.wifiSta + (d.ip ? ' (' + d.ip + ')' : '');
 
                     // Temp & Hum
-                    document.getElementById('valTemp').innerText = d.temp.toFixed(1);
-                    document.getElementById('valHum').innerText = d.hum.toFixed(1);
-                    document.getElementById('valHi').innerText = d.hi.toFixed(1);
+                    if (d.dhtOk) {
+                        document.getElementById('valTemp').innerText = d.temp.toFixed(1);
+                        document.getElementById('valHum').innerText = d.hum.toFixed(1);
+                        document.getElementById('valHi').innerText = d.hi.toFixed(1);
+                        document.getElementById('statusDht').innerText = 'DHT11 (GPIO 4)';
+                        document.getElementById('statusDht').className = 'card-status status-info';
+                    } else {
+                        document.getElementById('valTemp').innerText = '--.-';
+                        document.getElementById('valHum').innerText = '--.-';
+                        document.getElementById('valHi').innerText = '--.-';
+                        document.getElementById('statusDht').innerText = 'OFFLINE';
+                        document.getElementById('statusDht').className = 'card-status status-err';
+                    }
 
                     // eCO2
-                    document.getElementById('valEco2').innerText = d.eco2;
-                    document.getElementById('statusEco2').innerText = d.eco2Status;
-                    document.getElementById('barEco2').style.width = Math.min((d.eco2 / 2000) * 100, 100) + '%';
-                    document.getElementById('ccsStatus').innerText = d.ccsOk ? 'Wire1 (ONLINE)' : 'OFFLINE';
-                    document.getElementById('ccsStatus').style.color = d.ccsOk ? 'var(--emerald)' : 'var(--danger)';
+                    if (d.ccsOk && d.eco2 !== null) {
+                        document.getElementById('valEco2').innerText = d.eco2;
+                        document.getElementById('statusEco2').innerText = d.eco2Status;
+                        document.getElementById('statusEco2').className = 'card-status status-optimal';
+                        document.getElementById('barEco2').style.width = Math.min((d.eco2 / 2000) * 100, 100) + '%';
+                        document.getElementById('ccsStatus').innerText = 'Wire1 (ONLINE)';
+                        document.getElementById('ccsStatus').style.color = 'var(--emerald)';
+                    } else {
+                        document.getElementById('valEco2').innerText = '--';
+                        document.getElementById('statusEco2').innerText = 'OFFLINE';
+                        document.getElementById('statusEco2').className = 'card-status status-err';
+                        document.getElementById('barEco2').style.width = '0%';
+                        document.getElementById('ccsStatus').innerText = 'OFFLINE';
+                        document.getElementById('ccsStatus').style.color = 'var(--danger)';
+                    }
 
                     // TVOC
-                    document.getElementById('valTvoc').innerText = d.tvoc;
-                    document.getElementById('statusTvoc').innerText = d.tvocStatus;
-                    document.getElementById('barTvoc').style.width = Math.min((d.tvoc / 1000) * 100, 100) + '%';
+                    if (d.ccsOk && d.tvoc !== null) {
+                        document.getElementById('valTvoc').innerText = d.tvoc;
+                        document.getElementById('statusTvoc').innerText = d.tvocStatus;
+                        document.getElementById('statusTvoc').className = 'card-status status-purple';
+                        document.getElementById('barTvoc').style.width = Math.min((d.tvoc / 1000) * 100, 100) + '%';
+                    } else {
+                        document.getElementById('valTvoc').innerText = '--';
+                        document.getElementById('statusTvoc').innerText = 'OFFLINE';
+                        document.getElementById('statusTvoc').className = 'card-status status-err';
+                        document.getElementById('barTvoc').style.width = '0%';
+                    }
 
                     // NH3
                     document.getElementById('valNh3').innerText = d.nh3.toFixed(1);
@@ -928,15 +965,23 @@ void handleData() {
     json += "\"uptime\":\""       + uptime() + "\",";
     json += "\"wifiSta\":\""      + String(WiFi.status() == WL_CONNECTED ? "Connected" : "Disconnected") + "\",";
     json += "\"ip\":\""           + (WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : "") + "\",";
+    json += "\"dhtOk\":"          + String(currentDhtOk ? "true" : "false") + ",";
     json += "\"temp\":"           + String(currentTC, 1) + ",";
     json += "\"tempF\":"          + String(currentTF, 1) + ",";
     json += "\"hum\":"            + String(currentHum, 1) + ",";
     json += "\"hi\":"             + String(currentHI, 1) + ",";
-    json += "\"eco2\":"           + String(ccsECO2) + ",";
-    json += "\"eco2Status\":\""   + String(co2Label(ccsECO2)) + "\",";
-    json += "\"tvoc\":"           + String(ccsTVOC) + ",";
-    json += "\"tvocStatus\":\""   + String(tvocLabel(ccsTVOC)) + "\",";
     json += "\"ccsOk\":"          + String(ccsOK ? "true" : "false") + ",";
+    if (ccsOK) {
+        json += "\"eco2\":"         + String(ccsECO2) + ",";
+        json += "\"eco2Status\":\"" + String(co2Label(ccsECO2)) + "\",";
+        json += "\"tvoc\":"         + String(ccsTVOC) + ",";
+        json += "\"tvocStatus\":\"" + String(tvocLabel(ccsTVOC)) + "\",";
+    } else {
+        json += "\"eco2\":null,";
+        json += "\"eco2Status\":\"OFFLINE\",";
+        json += "\"tvoc\":null,";
+        json += "\"tvocStatus\":\"OFFLINE\",";
+    }
     json += "\"nh3\":"            + String(currentNH3, 1) + ",";
     json += "\"nh3V\":"           + String(currentMQ137V, 3) + ",";
     json += "\"nh3Status\":\""    + String(nh3Label(currentNH3, mq137Warmed)) + "\",";
@@ -1126,7 +1171,12 @@ void loop() {
     // 1. Process Incoming HTTP Clients Immediately
     server.handleClient();
 
-    if (!ccsOK) initCCS();
+    // Throttled CCS811 retry every 5s if offline
+    static unsigned long lastCcsRetry = 0;
+    if (!ccsOK && (millis() - lastCcsRetry >= 5000)) {
+        lastCcsRetry = millis();
+        initCCS();
+    }
 
     unsigned long now = millis();
 
@@ -1177,16 +1227,23 @@ void loop() {
         }
 
         // Serial Output
-        Serial.printf("[M1 #%lu] T:%.1fC | H:%.1f%% | eCO2:%u (%s) | NH3:%.1f (%s) | Flow:%.1fHz | WiFi:%s\n",
-                      loopCount, currentTC, currentHum, ccsECO2, co2Label(ccsECO2),
-                      currentNH3, nh3Label(currentNH3, mq137Warmed), currentFlowHz,
-                      WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString().c_str() : "AP-Only");
+        if (ccsOK) {
+            Serial.printf("[M1 #%lu] T:%.1fC | H:%.1f%% | eCO2:%u (%s) | NH3:%.1f (%s) | Flow:%.1fHz | WiFi:%s\n",
+                          loopCount, currentTC, currentHum, ccsECO2, co2Label(ccsECO2),
+                          currentNH3, nh3Label(currentNH3, mq137Warmed), currentFlowHz,
+                          WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString().c_str() : "AP-Only");
+        } else {
+            Serial.printf("[M1 #%lu] T:%.1fC | H:%.1f%% | eCO2:OFFLINE | NH3:%.1f (%s) | Flow:%.1fHz | WiFi:%s\n",
+                          loopCount, currentTC, currentHum,
+                          currentNH3, nh3Label(currentNH3, mq137Warmed), currentFlowHz,
+                          WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString().c_str() : "AP-Only");
+        }
 
         // Send ThingsBoard Telemetry
-        sendTelemetry(currentTC, currentTF, currentHum, currentHI,
+        sendTelemetry(currentTC, currentTF, currentHum, currentHI, currentDhtOk,
                       currentNH3, nh3Label(currentNH3, mq137Warmed), currentMQ137V, currentNH3Alert,
                       pulses, currentFlowHz, totalVolume, flowLabel(currentFlowHz),
-                      ccsECO2, co2Label(ccsECO2), ccsTVOC, tvocLabel(ccsTVOC));
+                      ccsECO2, co2Label(ccsECO2), ccsTVOC, tvocLabel(ccsTVOC), ccsOK);
 
         // Update live screen numbers
         if (lcd_available) {
