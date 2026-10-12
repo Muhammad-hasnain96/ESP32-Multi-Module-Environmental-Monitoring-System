@@ -243,8 +243,15 @@ void setup() {
     pinMode(PIN_BTN_DOWN, INPUT_PULLUP);
     pinMode(PIN_BTN_BACK, INPUT_PULLUP);
 
+    // Allow LCD backpack power to stabilize
+    delay(250);
+
     // Initialize I2C & LCD with Auto Scanner
     initLCD();
+    if (!lcdAvailable) {
+        delay(150);
+        initLCD();
+    }
 
     // Start 3x DHT11 Sensors (GPIO 8, 3, 42)
     pinMode(DHTPIN1, INPUT_PULLUP);
@@ -320,9 +327,9 @@ void setup() {
 void loop() {
     server.handleClient();
 
-    // Fast, non-blocking check for LCD (0x27 or 0x3F) every 10 seconds if not yet connected
+    // Non-blocking check for LCD every 3 seconds if not yet connected
     static unsigned long lastI2CRetry = 0;
-    if (!lcdAvailable && millis() - lastI2CRetry > 10000) {
+    if (!lcdAvailable && millis() - lastI2CRetry > 3000) {
         lastI2CRetry = millis();
         initLCD();
     }
@@ -385,13 +392,24 @@ void loop() {
 // --- PROVEN BATTLE-TESTED LCD INITIALIZER ---
 
 void initLCD() {
+    // 1. Hardware I2C bus recovery (clock SCL 16 times in case slave is latching SDA low)
+    pinMode(I2C_SDA, INPUT_PULLUP);
+    pinMode(I2C_SCL, OUTPUT);
+    for (int i = 0; i < 16; i++) {
+        digitalWrite(I2C_SCL, LOW);
+        delayMicroseconds(10);
+        digitalWrite(I2C_SCL, HIGH);
+        delayMicroseconds(10);
+    }
     pinMode(I2C_SDA, INPUT_PULLUP);
     pinMode(I2C_SCL, INPUT_PULLUP);
-    Wire.setPins(I2C_SDA, I2C_SCL);
+    delay(20);
+
     Wire.begin(I2C_SDA, I2C_SCL, 50000); // 50kHz for rock-solid stability over jumper wires
     Wire.setTimeOut(30);
 
     byte lcdAddr = 0;
+    // Fast check for common PCF8574 (0x27) and PCF8574A (0x3F)
     Wire.beginTransmission(0x27);
     if (Wire.endTransmission() == 0) {
         lcdAddr = 0x27;
@@ -400,8 +418,9 @@ void initLCD() {
         if (Wire.endTransmission() == 0) lcdAddr = 0x3F;
     }
 
+    // Full scan across all standard I2C addresses (0x08 to 0x77) if not found
     if (lcdAddr == 0) {
-        for (byte a = 0x20; a <= 0x3F; a++) {
+        for (byte a = 0x08; a <= 0x77; a++) {
             Wire.beginTransmission(a);
             if (Wire.endTransmission() == 0) {
                 lcdAddr = a;
@@ -417,27 +436,32 @@ void initLCD() {
 
         if (pLcd != nullptr) delete pLcd;
         pLcd = new LiquidCrystal_I2C(detectedLcdAddr, 20, 4);
+
+        // Standard library setup
         pLcd->init();
-        Wire.begin(I2C_SDA, I2C_SCL, 50000); // CRITICAL: Re-assert pins because library init() calls Wire.begin() with no args!
+
+        // CRITICAL FIX: Library init() internally calls Wire.begin() with no parameters,
+        // which resets ESP32 I2C pins to defaults! We must re-assert pins AND explicitly
+        // call begin(20, 4) so HD44780 4-bit initialization pulses are sent over GPIO 17 & 18!
+        Wire.begin(I2C_SDA, I2C_SCL, 50000);
+        pLcd->begin(20, 4);
         pLcd->backlight();
         pLcd->display();
         pLcd->clear();
 
-        pLcd->setCursor(0, 0);
-        pLcd->print("====================");
-        pLcd->setCursor(0, 1);
-        pLcd->print("  16-CH CLIMATE HUB ");
-        pLcd->setCursor(0, 2);
-        pLcd->print("  ESP32-S3 + RELAYS ");
-        pLcd->setCursor(0, 3);
-        pLcd->print("====================");
+        pLcd->setCursor(0, 0); pLcd->print("====================");
+        pLcd->setCursor(0, 1); pLcd->print("  16-CH CLIMATE HUB ");
+        pLcd->setCursor(0, 2); pLcd->print("  ESP32-S3 + RELAYS ");
+        pLcd->setCursor(0, 3); pLcd->print("====================");
 
         lcdAvailable = true;
-        delay(1500);
+        delay(1000);
         pLcd->clear();
+        updateLCD(); // Immediately render active screen!
     } else {
         lcdStatusStr = "Not Detected (Check SDA 17, SCL 18)";
         lcdAvailable = false;
+        Serial.println("❌ LCD NOT DETECTED on SDA 17, SCL 18");
     }
 }
 
