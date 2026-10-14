@@ -389,6 +389,10 @@ void setup() {
     prefWifi.begin("wifi-config", false);
     saved_ssid = prefWifi.getString("ssid", "DS-Guest");
     saved_pass = prefWifi.getString("pass", "Shahid786");
+    if (saved_ssid.length() == 0) {
+        saved_ssid = "DS-Guest";
+        saved_pass = "Shahid786";
+    }
 
     WiFi.mode(WIFI_AP_STA);
     WiFi.softAP(AP_SSID, AP_PASS);
@@ -512,12 +516,24 @@ void loop() {
     static unsigned long lastRelayReport = 0;
     if (millis() - lastRelayReport > 5000) {
         lastRelayReport = millis();
+        Serial.printf("📡 NET: Status=%s | SSID='%s' | IP=%s | AP='ESP32-Relay-Controller' (192.168.4.1)\n",
+            WiFi.status() == WL_CONNECTED ? "CONNECTED" : "DISCONNECTED",
+            WiFi.status() == WL_CONNECTED ? WiFi.SSID().c_str() : saved_ssid.c_str(),
+            WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString().c_str() : "No IP");
         Serial.printf("⚡ RELAY STATUS [AvgTemp: %.1fC, AvgHum: %.1f%%, Sensor: %s]:\n", avgTemp, avgHum, sensorValid ? "OK" : "NC");
         for (int i = 0; i < NUM_RELAYS; i++) {
             Serial.printf("  R%02d [%s]: Mode=%d, Sens=%d, St=%s | %s\n",
                 i + 1, configs[i].name, configs[i].mode, configs[i].sensor,
                 relayStates[i] ? "ON" : "OFF", relayReason[i].c_str());
         }
+    }
+
+    // Auto-reconnect WiFi in background if disconnected
+    static unsigned long lastWifiRetry = 0;
+    if (WiFi.status() != WL_CONNECTED && saved_ssid.length() > 0 && millis() - lastWifiRetry > 15000) {
+        lastWifiRetry = millis();
+        Serial.printf("🔄 Retrying WiFi connection to '%s'...\n", saved_ssid.c_str());
+        WiFi.begin(saved_ssid.c_str(), saved_pass.c_str());
     }
 
     // Read Buttons
