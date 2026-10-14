@@ -231,8 +231,39 @@ enum MenuState {
     STATE_GLOBAL_EDIT,     // Edit Global Min or Max
     STATE_SELECT_RELAY,    // Scroll Relays 1-16
     STATE_RELAY_MENU,      // Mode, Min, Max for selected Relay
-    STATE_EDIT_VALUE       // Edit Min or Max for selected Relay
+    STATE_EDIT_VALUE,      // Edit Min or Max for selected Relay
+    STATE_SELECT_SENSOR,   // Dropdown list to select Sensor Source
+    STATE_SELECT_MODE      // Dropdown list to select Control Mode
 };
+
+struct MenuOptionItem {
+    int id;
+    const char* label;
+};
+
+const MenuOptionItem SENSOR_OPTIONS[] = {
+    { 1,  "Avg Temperature" },
+    { 2,  "Avg Humidity" },
+    { 3,  "Sensor 1 Temp" },
+    { 4,  "Sensor 1 Hum" },
+    { 5,  "Sensor 2 Temp" },
+    { 6,  "Sensor 2 Hum" },
+    { 7,  "Sensor 3 Temp" },
+    { 8,  "Sensor 3 Hum" },
+    { 9,  "Ammonia NH3 Gas" },
+    { 10, "Water Flow Rate" },
+    { 11, "Pure Cyclic Tmr" },
+    { 0,  "Manual Only" }
+};
+const int NUM_SENSOR_OPTIONS = sizeof(SENSOR_OPTIONS) / sizeof(SENSOR_OPTIONS[0]);
+
+const MenuOptionItem MODE_OPTIONS[] = {
+    { 0, "Threshold Only" },
+    { 1, "Timer + Override" },
+    { 2, "Pure Cyclic Timer" },
+    { 3, "Manual Control" }
+};
+const int NUM_MODE_OPTIONS = sizeof(MODE_OPTIONS) / sizeof(MODE_OPTIONS[0]);
 
 MenuState currentMenu = STATE_HOME;
 int mainMenuIndex = 0;         // 0: Temp, 1: Hum, 2: Relays
@@ -245,8 +276,10 @@ float globalNH3Min = 10.0;
 float globalNH3Max = 25.0;
 
 int selectedRelay = 0;         // 0 to 15
-int relayMenuIndex = 0;        // 0: Mode, 1: Min, 2: Max
-int selectedTarget = 0;        // 0: Min, 1: Max
+int relayMenuIndex = 0;        // 0: Sens, 1: Mode, 2: Min, 3: Max, 4: T-On, 5: T-Off
+int sensorMenuIndex = 0;       // 0 to 11
+int modeMenuIndex = 0;         // 0 to 3
+int selectedTarget = 0;        // 0: Min, 1: Max, 2: T-On, 3: T-Off
 float editingVal = 0.0;
 unsigned long lastMenuActivity = 0;
 
@@ -284,6 +317,8 @@ void drawGlobalEditScreen();
 void drawSelectRelayScreen();
 void drawRelayMenuScreen();
 void drawEditValueScreen();
+void drawSelectSensorScreen();
+void drawSelectModeScreen();
 
 void handleRoot();
 void handleRelayToggle();
@@ -401,14 +436,7 @@ void setup() {
         sta_status_str = "Connecting...";
         Serial.printf("📡 Connecting to WiFi: %s ...\n", saved_ssid.c_str());
 
-        // Configure Static IP 192.168.0.22 for Router
-        IPAddress local_IP(192, 168, 0, 22);
-        IPAddress gateway(192, 168, 0, 1);
-        IPAddress subnet(255, 255, 255, 0);
-        IPAddress primaryDNS(192, 168, 0, 1);
-        IPAddress secondaryDNS(8, 8, 8, 8);
-        WiFi.config(local_IP, gateway, subnet, primaryDNS, secondaryDNS);
-
+        // Connect via standard DHCP so router properly assigns and routes IP
         WiFi.begin(saved_ssid.c_str(), saved_pass.c_str());
         int count = 0;
         while (WiFi.status() != WL_CONNECTED && count < 20) {
@@ -831,44 +859,28 @@ void updateButtons() {
                 updateLCD();
             } else if (bMenu) {
                 if (relayMenuIndex == 0) {
-                    // Cycle Sensor: 1(AvgT) -> 2(AvgH) -> 3(DHT1 T) -> ... -> 11(PureTmr) -> 0(Manual) -> 1
-                    configs[selectedRelay].sensor = (configs[selectedRelay].sensor + 1) % 12;
-                    relayTimerLastSwitch[selectedRelay] = 0;
-                    saveRelayConfig(selectedRelay);
-                    readDHTSensor();
-                    evaluateSingleRelay(selectedRelay, true);
-
-                    if (lcdAvailable && pLcd != nullptr) {
-                        pLcd->clear();
-                        pLcd->setCursor(2, 1);
-                        pLcd->print("Sensor Assigned!");
-                        pLcd->setCursor(2, 2);
-                        char sbuf[21]; snprintf(sbuf, sizeof(sbuf), "-> %s", getSensorName(configs[selectedRelay].sensor));
-                        pLcd->print(sbuf);
-                        delay(600);
-                        pLcd->clear();
+                    // Open Sensor Dropdown Selection Screen
+                    currentMenu = STATE_SELECT_SENSOR;
+                    sensorMenuIndex = 0;
+                    for (int i = 0; i < NUM_SENSOR_OPTIONS; i++) {
+                        if (SENSOR_OPTIONS[i].id == configs[selectedRelay].sensor) {
+                            sensorMenuIndex = i;
+                            break;
+                        }
                     }
+                    if (lcdAvailable && pLcd != nullptr) pLcd->clear();
                     updateLCD();
                 } else if (relayMenuIndex == 1) {
-                    // Cycle Mode: 0(Thresh Only) -> 1(Timer+Override) -> 2(Pure Timer) -> 3(Manual) -> 0
-                    configs[selectedRelay].mode = (configs[selectedRelay].mode + 1) % 4;
-                    relayTimerLastSwitch[selectedRelay] = 0;
-                    saveRelayConfig(selectedRelay);
-                    readDHTSensor();
-                    evaluateSingleRelay(selectedRelay, true);
-
-                    if (lcdAvailable && pLcd != nullptr) {
-                        pLcd->clear();
-                        pLcd->setCursor(3, 1);
-                        pLcd->print("Mode Updated!");
-                        pLcd->setCursor(1, 2);
-                        if (configs[selectedRelay].mode == 0) pLcd->print("-> Threshold Only");
-                        else if (configs[selectedRelay].mode == 1) pLcd->print("-> Timer+Override");
-                        else if (configs[selectedRelay].mode == 2) pLcd->print("-> Pure Cyclic Tmr");
-                        else pLcd->print("-> Manual Control");
-                        delay(600);
-                        pLcd->clear();
+                    // Open Control Mode Dropdown Selection Screen
+                    currentMenu = STATE_SELECT_MODE;
+                    modeMenuIndex = 0;
+                    for (int i = 0; i < NUM_MODE_OPTIONS; i++) {
+                        if (MODE_OPTIONS[i].id == configs[selectedRelay].mode) {
+                            modeMenuIndex = i;
+                            break;
+                        }
                     }
+                    if (lcdAvailable && pLcd != nullptr) pLcd->clear();
                     updateLCD();
                 } else {
                     currentMenu = STATE_EDIT_VALUE;
@@ -991,6 +1003,80 @@ void updateButtons() {
                 updateLCD();
             }
             break;
+
+        case STATE_SELECT_SENSOR:
+            if (bUp) {
+                sensorMenuIndex = (sensorMenuIndex - 1 + NUM_SENSOR_OPTIONS) % NUM_SENSOR_OPTIONS;
+                updateLCD();
+            } else if (bDown) {
+                sensorMenuIndex = (sensorMenuIndex + 1) % NUM_SENSOR_OPTIONS;
+                updateLCD();
+            } else if (bBack) {
+                currentMenu = STATE_RELAY_MENU;
+                if (lcdAvailable && pLcd != nullptr) pLcd->clear();
+                updateLCD();
+            } else if (bMenu) {
+                configs[selectedRelay].sensor = SENSOR_OPTIONS[sensorMenuIndex].id;
+                relayTimerLastSwitch[selectedRelay] = 0;
+                saveRelayConfig(selectedRelay);
+                readDHTSensor();
+                evaluateSingleRelay(selectedRelay, true);
+                Serial.printf("⚡ LCD Sensor Assigned to Relay %d [%s]: %d (%s)\n",
+                    selectedRelay + 1, configs[selectedRelay].name,
+                    configs[selectedRelay].sensor, SENSOR_OPTIONS[sensorMenuIndex].label);
+
+                if (lcdAvailable && pLcd != nullptr) {
+                    pLcd->clear();
+                    pLcd->setCursor(2, 1);
+                    pLcd->print("** SENSOR SAVED! **");
+                    pLcd->setCursor(1, 2);
+                    char sbuf[21];
+                    snprintf(sbuf, sizeof(sbuf), "-> %-16.16s", SENSOR_OPTIONS[sensorMenuIndex].label);
+                    pLcd->print(sbuf);
+                    delay(700);
+                    pLcd->clear();
+                }
+                currentMenu = STATE_RELAY_MENU;
+                updateLCD();
+            }
+            break;
+
+        case STATE_SELECT_MODE:
+            if (bUp) {
+                modeMenuIndex = (modeMenuIndex - 1 + NUM_MODE_OPTIONS) % NUM_MODE_OPTIONS;
+                updateLCD();
+            } else if (bDown) {
+                modeMenuIndex = (modeMenuIndex + 1) % NUM_MODE_OPTIONS;
+                updateLCD();
+            } else if (bBack) {
+                currentMenu = STATE_RELAY_MENU;
+                if (lcdAvailable && pLcd != nullptr) pLcd->clear();
+                updateLCD();
+            } else if (bMenu) {
+                configs[selectedRelay].mode = MODE_OPTIONS[modeMenuIndex].id;
+                relayTimerLastSwitch[selectedRelay] = 0;
+                saveRelayConfig(selectedRelay);
+                readDHTSensor();
+                evaluateSingleRelay(selectedRelay, true);
+                Serial.printf("⚡ LCD Mode Assigned to Relay %d [%s]: %d (%s)\n",
+                    selectedRelay + 1, configs[selectedRelay].name,
+                    configs[selectedRelay].mode, MODE_OPTIONS[modeMenuIndex].label);
+
+                if (lcdAvailable && pLcd != nullptr) {
+                    pLcd->clear();
+                    pLcd->setCursor(2, 1);
+                    pLcd->print("*** MODE SAVED! ***");
+                    pLcd->setCursor(1, 2);
+                    char mbuf[21];
+                    snprintf(mbuf, sizeof(mbuf), "-> %-16.16s", MODE_OPTIONS[modeMenuIndex].label);
+                    pLcd->print(mbuf);
+                    delay(700);
+                    pLcd->clear();
+                }
+                currentMenu = STATE_RELAY_MENU;
+                updateLCD();
+            }
+            break;
     }
 }
 
@@ -1007,6 +1093,8 @@ void updateLCD() {
         case STATE_SELECT_RELAY:  drawSelectRelayScreen(); break;
         case STATE_RELAY_MENU:    drawRelayMenuScreen(); break;
         case STATE_EDIT_VALUE:    drawEditValueScreen(); break;
+        case STATE_SELECT_SENSOR: drawSelectSensorScreen(); break;
+        case STATE_SELECT_MODE:   drawSelectModeScreen(); break;
     }
 }
 
@@ -1328,6 +1416,58 @@ void drawEditValueScreen() {
 
     pLcd->setCursor(0, 3);
     pLcd->print("[MENU]Save  [BCK]Esc");
+}
+
+void drawSelectSensorScreen() {
+    pLcd->setCursor(0, 0);
+    char b0[21];
+    snprintf(b0, sizeof(b0), "SENSOR R%02d   (%02d/%02d)", selectedRelay + 1, sensorMenuIndex + 1, NUM_SENSOR_OPTIONS);
+    pLcd->print(b0);
+
+    int startIdx = 0;
+    if (sensorMenuIndex <= 1) {
+        startIdx = 0;
+    } else if (sensorMenuIndex >= NUM_SENSOR_OPTIONS - 1) {
+        startIdx = NUM_SENSOR_OPTIONS - 3;
+    } else {
+        startIdx = sensorMenuIndex - 1;
+    }
+
+    for (int row = 1; row <= 3; row++) {
+        int item = startIdx + (row - 1);
+        pLcd->setCursor(0, row);
+        char lineBuf[22];
+        char cursorChar = (item == sensorMenuIndex) ? '>' : ' ';
+        char activeChar = (SENSOR_OPTIONS[item].id == configs[selectedRelay].sensor) ? '*' : ' ';
+        snprintf(lineBuf, sizeof(lineBuf), "%c%-18.18s%c", cursorChar, SENSOR_OPTIONS[item].label, activeChar);
+        pLcd->print(lineBuf);
+    }
+}
+
+void drawSelectModeScreen() {
+    pLcd->setCursor(0, 0);
+    char b0[21];
+    snprintf(b0, sizeof(b0), "MODE R%02d     (%02d/%02d)", selectedRelay + 1, modeMenuIndex + 1, NUM_MODE_OPTIONS);
+    pLcd->print(b0);
+
+    int startIdx = 0;
+    if (modeMenuIndex <= 1) {
+        startIdx = 0;
+    } else if (modeMenuIndex >= NUM_MODE_OPTIONS - 1) {
+        startIdx = NUM_MODE_OPTIONS - 3;
+    } else {
+        startIdx = modeMenuIndex - 1;
+    }
+
+    for (int row = 1; row <= 3; row++) {
+        int item = startIdx + (row - 1);
+        pLcd->setCursor(0, row);
+        char lineBuf[22];
+        char cursorChar = (item == modeMenuIndex) ? '>' : ' ';
+        char activeChar = (MODE_OPTIONS[item].id == configs[selectedRelay].mode) ? '*' : ' ';
+        snprintf(lineBuf, sizeof(lineBuf), "%c%-18.18s%c", cursorChar, MODE_OPTIONS[item].label, activeChar);
+        pLcd->print(lineBuf);
+    }
 }
 
 // --- SENSOR & AUTO EVALUATION ---
