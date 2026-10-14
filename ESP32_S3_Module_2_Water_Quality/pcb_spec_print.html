@@ -1,0 +1,592 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>ESP32-S3 Module 2 PCB Hardware Design Specification</title>
+    <style>
+        @page {
+            size: A4 portrait;
+            margin: 14mm 16mm 14mm 16mm;
+            @bottom-right {
+                content: counter(page);
+            }
+        }
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        }
+        body {
+            background: #ffffff;
+            color: #1e293b;
+            font-size: 9.5pt;
+            line-height: 1.45;
+            -webkit-print-color-adjust: exact;
+            print-color-adjust: exact;
+        }
+
+        /* Cover Header */
+        .header {
+            border-bottom: 2.5px solid #0284c7;
+            padding-bottom: 12px;
+            margin-bottom: 16px;
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-end;
+        }
+        .header-left h1 {
+            font-size: 18pt;
+            font-weight: 800;
+            color: #0f172a;
+            letter-spacing: -0.5px;
+        }
+        .header-left .subtitle {
+            font-size: 10pt;
+            font-weight: 600;
+            color: #0284c7;
+            margin-top: 2px;
+        }
+        .header-right {
+            text-align: right;
+            font-size: 8pt;
+            color: #64748b;
+            line-height: 1.35;
+        }
+        .header-right b {
+            color: #334155;
+        }
+
+        /* Section Headings */
+        h2 {
+            font-size: 11pt;
+            font-weight: 700;
+            color: #0f172a;
+            border-left: 4px solid #0284c7;
+            padding-left: 8px;
+            margin-top: 16px;
+            margin-bottom: 8px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        /* Summary Badges */
+        .meta-strip {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 8px;
+            margin-bottom: 14px;
+        }
+        .meta-card {
+            background: #f8fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 6px;
+            padding: 6px 10px;
+        }
+        .meta-card .label {
+            font-size: 7pt;
+            text-transform: uppercase;
+            color: #64748b;
+            font-weight: 700;
+        }
+        .meta-card .val {
+            font-size: 9pt;
+            font-weight: 700;
+            color: #0f172a;
+            margin-top: 1px;
+        }
+
+        /* Tables */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 6px;
+            margin-bottom: 12px;
+            font-size: 8.5pt;
+        }
+        th {
+            background: #0f172a;
+            color: #ffffff;
+            font-weight: 700;
+            text-align: left;
+            padding: 6px 8px;
+            font-size: 8pt;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+        }
+        td {
+            padding: 5.5px 8px;
+            border-bottom: 1px solid #e2e8f0;
+            color: #334155;
+            vertical-align: middle;
+        }
+        tr:nth-child(even) td {
+            background: #f8fafc;
+        }
+        .pin-badge {
+            background: #e0f2fe;
+            color: #0369a1;
+            font-weight: 700;
+            padding: 2px 6px;
+            border-radius: 4px;
+            display: inline-block;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 8pt;
+        }
+        .net-name {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-weight: 700;
+            color: #0f172a;
+            font-size: 8pt;
+        }
+        .v-tag-33 {
+            background: #ecfdf5;
+            color: #047857;
+            font-weight: 700;
+            padding: 2px 5px;
+            border-radius: 3px;
+            font-size: 7.5pt;
+        }
+        .v-tag-50 {
+            background: #fef2f2;
+            color: #b91c1c;
+            font-weight: 700;
+            padding: 2px 5px;
+            border-radius: 3px;
+            font-size: 7.5pt;
+        }
+
+        /* Caution Box */
+        .callout-box {
+            background: #fffbeb;
+            border: 1px solid #fde68a;
+            border-left: 4px solid #f59e0b;
+            border-radius: 4px;
+            padding: 8px 12px;
+            margin: 10px 0;
+            font-size: 8.5pt;
+            color: #92400e;
+        }
+        .callout-box b {
+            color: #78350f;
+        }
+
+        /* Connectors Grid */
+        .connectors-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 8px;
+            margin-top: 6px;
+            margin-bottom: 12px;
+        }
+        .conn-card {
+            background: #ffffff;
+            border: 1px solid #cbd5e1;
+            border-radius: 6px;
+            padding: 8px;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+        }
+        .conn-card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid #e2e8f0;
+            padding-bottom: 4px;
+            margin-bottom: 6px;
+        }
+        .conn-id {
+            font-weight: 800;
+            font-size: 9pt;
+            color: #0284c7;
+        }
+        .conn-type {
+            font-size: 7pt;
+            color: #64748b;
+            font-weight: 600;
+        }
+        .conn-name {
+            font-size: 8.5pt;
+            font-weight: 700;
+            color: #0f172a;
+            margin-bottom: 6px;
+        }
+        .pin-row {
+            display: flex;
+            justify-content: space-between;
+            font-size: 7.5pt;
+            padding: 2px 0;
+            border-bottom: 1px dashed #f1f5f9;
+        }
+        .pin-num {
+            font-weight: 700;
+            color: #64748b;
+            width: 14px;
+        }
+        .pin-func {
+            font-family: ui-monospace, SFMono-Regular, monospace;
+            font-weight: 700;
+            color: #0f172a;
+        }
+        .pin-volt {
+            color: #0284c7;
+            font-weight: 600;
+        }
+
+        /* Diagrams & Code Blocks */
+        .circuit-schematic {
+            background: #0f172a;
+            color: #38bdf8;
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 7.5pt;
+            line-height: 1.35;
+            white-space: pre;
+            margin: 6px 0 10px 0;
+            overflow-x: hidden;
+        }
+
+        /* 2-Column Guidelines */
+        .layout-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-top: 6px;
+            margin-bottom: 10px;
+        }
+        .guide-box {
+            background: #f8fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 6px;
+            padding: 8px 10px;
+            font-size: 8pt;
+        }
+        .guide-box h3 {
+            font-size: 8.5pt;
+            font-weight: 700;
+            color: #0f172a;
+            margin-bottom: 4px;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+        .guide-box ul {
+            padding-left: 14px;
+            color: #475569;
+        }
+        .guide-box li {
+            margin-bottom: 3px;
+        }
+
+        .page-break {
+            page-break-before: always;
+        }
+
+        /* Footer */
+        .footer {
+            margin-top: 16px;
+            border-top: 1px solid #cbd5e1;
+            padding-top: 6px;
+            display: flex;
+            justify-content: space-between;
+            font-size: 7.5pt;
+            color: #94a3b8;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Header -->
+    <div class="header">
+        <div class="header-left">
+            <h1>ESP32-S3 Module 2: Water Quality & Flow Hub</h1>
+            <div class="subtitle">PCB Hardware Engineering & Layout Specification</div>
+        </div>
+        <div class="header-right">
+            <div><b>Doc ID:</b> SPEC-PCB-M2-WQ-V1.0</div>
+            <div><b>Target MCU:</b> ESP32-S3-WROOM-1 / DevKitC-1</div>
+            <div><b>Date:</b> October 2026 | <b>Status:</b> Production Ready</div>
+        </div>
+    </div>
+
+    <!-- Meta Strip -->
+    <div class="meta-strip">
+        <div class="meta-card">
+            <div class="label">Main DC Power Input</div>
+            <div class="val">5.0V DC (or 12V Buck)</div>
+        </div>
+        <div class="meta-card">
+            <div class="label">Logic Levels</div>
+            <div class="val">3.3V LVTTL / 5V Tolerant</div>
+        </div>
+        <div class="meta-card">
+            <div class="label">Analog Channels</div>
+            <div class="val">2x 12-Bit ADC (TDS, pH)</div>
+        </div>
+        <div class="meta-card">
+            <div class="label">Display Bus</div>
+            <div class="val">I2C (SDA: 17, SCL: 18)</div>
+        </div>
+    </div>
+
+    <!-- Section 1: Master Netlist & Pin Allocation -->
+    <h2>1. Master MCU Pin Mapping & Schematic Netlist</h2>
+    <table>
+        <thead>
+            <tr>
+                <th style="width: 14%;">ESP32 Pin</th>
+                <th style="width: 20%;">Schematic Net</th>
+                <th style="width: 18%;">Subsystem Device</th>
+                <th style="width: 15%;">Signal Type</th>
+                <th style="width: 10%;">Rail</th>
+                <th style="width: 23%;">Signal Conditioning & Passives</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td><span class="pin-badge">GPIO 1</span></td>
+                <td><span class="net-name">NET_TDS_ADC</span></td>
+                <td>Analog TDS Meter</td>
+                <td>Analog (ADC1_CH0)</td>
+                <td><span class="v-tag-33">3.3V</span></td>
+                <td>RC Filter: 100&Omega; series + 100nF MLCC to GND</td>
+            </tr>
+            <tr>
+                <td><span class="pin-badge">GPIO 2</span></td>
+                <td><span class="net-name">NET_PH_ADC</span></td>
+                <td>pH-4502C Sensor (Po)</td>
+                <td>Analog (ADC1_CH1)</td>
+                <td><span class="v-tag-50">5.0V*</span></td>
+                <td>RC Filter: 100&Omega; series + 100nF MLCC to GND</td>
+            </tr>
+            <tr>
+                <td><span class="pin-badge">GPIO 4</span></td>
+                <td><span class="net-name">NET_DHT11_DATA</span></td>
+                <td>DHT11 Air Sensor</td>
+                <td>Single-Wire GPIO</td>
+                <td><span class="v-tag-33">3.3V</span></td>
+                <td>Pull-up: 4.7k&Omega; to 3.3V bus</td>
+            </tr>
+            <tr>
+                <td><span class="pin-badge">GPIO 5</span></td>
+                <td><span class="net-name">NET_FLOW_PULSE</span></td>
+                <td>FS200A Flow Sensor</td>
+                <td>Ext Interrupt</td>
+                <td><span class="v-tag-50">5.0V/3V3</span></td>
+                <td>10k&Omega; pull-up to 3.3V + 1k&Omega; series limit + 1nF cap</td>
+            </tr>
+            <tr>
+                <td><span class="pin-badge">GPIO 17</span></td>
+                <td><span class="net-name">NET_I2C_SDA</span></td>
+                <td>2004 LCD Display</td>
+                <td>I2C0 Data (Open-Drain)</td>
+                <td><span class="v-tag-33">3.3V</span></td>
+                <td>Pull-up footprint: 4.7k&Omega; to 3.3V</td>
+            </tr>
+            <tr>
+                <td><span class="pin-badge">GPIO 18</span></td>
+                <td><span class="net-name">NET_I2C_SCL</span></td>
+                <td>2004 LCD Display</td>
+                <td>I2C0 Clock (Open-Drain)</td>
+                <td><span class="v-tag-33">3.3V</span></td>
+                <td>Pull-up footprint: 4.7k&Omega; to 3.3V</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <div class="callout-box">
+        <b>CRITICAL HARDWARE RULE (Octal Flash / PSRAM Restriction):</b> On the ESP32-S3, <b>GPIO 33, 34, 35, 36, and 37 are strictly reserved</b> for the internal high-speed Octal SPI Flash/PSRAM interconnect. Routing any sensor or header trace to GPIO 33–37 will permanently crash the microcontroller bootloader.
+    </div>
+
+    <!-- Section 2: Connectors Specification -->
+    <h2>2. Header Pinouts & Peripheral Connectors (Footprint Specs)</h2>
+    <div class="connectors-grid">
+        <!-- J1 -->
+        <div class="conn-card">
+            <div class="conn-card-header">
+                <span class="conn-id">J1</span>
+                <span class="conn-type">Screw Term 5.08mm</span>
+            </div>
+            <div class="conn-name">Main DC Power Input</div>
+            <div class="pin-row"><span class="pin-num">1</span><span class="pin-func">+12V / +5V EXT</span><span class="pin-volt">Power In</span></div>
+            <div class="pin-row"><span class="pin-num">2</span><span class="pin-func">GND</span><span class="pin-volt">0V Return</span></div>
+        </div>
+
+        <!-- J2 -->
+        <div class="conn-card">
+            <div class="conn-card-header">
+                <span class="conn-id">J2</span>
+                <span class="conn-type">JST-XH 2.54mm (3P)</span>
+            </div>
+            <div class="conn-name">DHT11 Temp & Humidity</div>
+            <div class="pin-row"><span class="pin-num">1</span><span class="pin-func">+3V3</span><span class="pin-volt">3.3V VCC</span></div>
+            <div class="pin-row"><span class="pin-num">2</span><span class="pin-func">NET_DHT11_DATA</span><span class="pin-volt">GPIO 4</span></div>
+            <div class="pin-row"><span class="pin-num">3</span><span class="pin-func">GND</span><span class="pin-volt">Ground</span></div>
+        </div>
+
+        <!-- J3 -->
+        <div class="conn-card">
+            <div class="conn-card-header">
+                <span class="conn-id">J3</span>
+                <span class="conn-type">JST-XH 2.54mm (3P)</span>
+            </div>
+            <div class="conn-name">Analog TDS Meter</div>
+            <div class="pin-row"><span class="pin-num">1</span><span class="pin-func">NET_TDS_ADC</span><span class="pin-volt">GPIO 1</span></div>
+            <div class="pin-row"><span class="pin-num">2</span><span class="pin-func">+3V3</span><span class="pin-volt">3.3V VCC</span></div>
+            <div class="pin-row"><span class="pin-num">3</span><span class="pin-func">GND</span><span class="pin-volt">Ground</span></div>
+        </div>
+
+        <!-- J4 -->
+        <div class="conn-card">
+            <div class="conn-card-header">
+                <span class="conn-id">J4</span>
+                <span class="conn-type">Screw / JST-XH (3P)</span>
+            </div>
+            <div class="conn-name">FS200A Flow Sensor</div>
+            <div class="pin-row"><span class="pin-num">1</span><span class="pin-func">+5V0 / +3V3</span><span class="pin-volt">Red Wire</span></div>
+            <div class="pin-row"><span class="pin-num">2</span><span class="pin-func">NET_FLOW_PULSE</span><span class="pin-volt">GPIO 5</span></div>
+            <div class="pin-row"><span class="pin-num">3</span><span class="pin-func">GND</span><span class="pin-volt">Black Wire</span></div>
+        </div>
+
+        <!-- J5 -->
+        <div class="conn-card">
+            <div class="conn-card-header">
+                <span class="conn-id">J5</span>
+                <span class="conn-type">JST-XH 2.54mm (4P)</span>
+            </div>
+            <div class="conn-name">pH-4502C Probe Module</div>
+            <div class="pin-row"><span class="pin-num">1</span><span class="pin-func">+5V0</span><span class="pin-volt">Mandatory 5V</span></div>
+            <div class="pin-row"><span class="pin-num">2</span><span class="pin-func">GND (Power)</span><span class="pin-volt">Ground</span></div>
+            <div class="pin-row"><span class="pin-num">3</span><span class="pin-func">NET_PH_ADC (Po)</span><span class="pin-volt">GPIO 2</span></div>
+            <div class="pin-row"><span class="pin-num">4</span><span class="pin-func">GND (Analog)</span><span class="pin-volt">Ground</span></div>
+        </div>
+
+        <!-- J6 -->
+        <div class="conn-card">
+            <div class="conn-card-header">
+                <span class="conn-id">J6</span>
+                <span class="conn-type">2.54mm Header (4P)</span>
+            </div>
+            <div class="conn-name">2004 I2C LCD Display</div>
+            <div class="pin-row"><span class="pin-num">1</span><span class="pin-func">GND</span><span class="pin-volt">Ground</span></div>
+            <div class="pin-row"><span class="pin-num">2</span><span class="pin-func">+5V0</span><span class="pin-volt">Mandatory 5V</span></div>
+            <div class="pin-row"><span class="pin-num">3</span><span class="pin-func">NET_I2C_SDA</span><span class="pin-volt">GPIO 17</span></div>
+            <div class="pin-row"><span class="pin-num">4</span><span class="pin-func">NET_I2C_SCL</span><span class="pin-volt">GPIO 18</span></div>
+        </div>
+    </div>
+
+    <div class="footer">
+        <span>ESP32-S3 Module 2 PCB Hardware Design Specification</span>
+        <span>Confidential & Proprietary — Smart Aquaculture / Hydroponics</span>
+        <span>Page 1 of 2</span>
+    </div>
+
+    <!-- PAGE 2 BREAK -->
+    <div class="page-break"></div>
+
+    <!-- Section 3: Analog Front-End Conditioning -->
+    <div style="padding-top: 8px;"></div>
+    <h2>3. Analog Front-End Conditioning & Noise Suppression</h2>
+    <div class="circuit-schematic">
+              ANALOG INPUT LOW-PASS FILTER (GPIO 1 & GPIO 2)
+  Sensor Signal >---+------[ R_FILTER: 100 Ohm ]------+------> ESP32-S3 ADC Pin
+                    |                                 |
+                 [ TVS ]                        [ C_FILTER ]
+                 SMAJ3.3A                       100nF MLCC X7R
+                    |                                 |
+                   GND                               GND
+  * Function: Eliminates 50Hz/60Hz AC mains hum and submersible pump motor inductive spikes from water tanks.
+    </div>
+
+    <!-- Section 4: PCB Layout & Routing Guidelines -->
+    <h2>4. PCB Layout & Routing Engineering Guidelines</h2>
+    <div class="layout-grid">
+        <div class="guide-box">
+            <h3>⚡ Trace Geometries & Power Distribution</h3>
+            <ul>
+                <li><b>+5V0 & +3V3 Power Traces:</b> 24 to 32 mils (0.6mm – 0.8mm) to minimize I&sup2;R drop.</li>
+                <li><b>Analog Signals (GPIO 1, GPIO 2):</b> 10 to 12 mils. Keep strictly away from relay coils, switching DC-DC inductors, and crystal oscillators.</li>
+                <li><b>Digital Signals (I2C, DHT, Flow):</b> 10 to 12 mils with 3W spacing to prevent crosstalk.</li>
+            </ul>
+        </div>
+        <div class="guide-box">
+            <h3>🛡️ Ground Plane & Decoupling Strategy</h3>
+            <ul>
+                <li><b>Solid Ground Pour:</b> Maintain an unbroken GND copper plane on Layer 2 (Bottom layer).</li>
+                <li><b>Decoupling Capacitors:</b> Place 100nF ceramic caps within <b>&lt; 3mm</b> of sensor connector pins and ESP32 VDD pins.</li>
+                <li><b>Star Grounding:</b> Connect analog sensor grounds (TDS & pH) directly to main system GND to prevent return current offsets.</li>
+            </ul>
+        </div>
+    </div>
+
+    <!-- Section 5: Bill of Materials -->
+    <h2>5. Recommended Bill of Materials (BOM)</h2>
+    <table>
+        <thead>
+            <tr>
+                <th style="width: 15%;">Designator</th>
+                <th style="width: 25%;">Value / Part</th>
+                <th style="width: 20%;">Package / Footprint</th>
+                <th style="width: 40%;">Description & Purpose</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td><b>U1</b></td>
+                <td>ESP32-S3-DevKitC-1</td>
+                <td>2x22 Pin 2.54mm Socket</td>
+                <td>Dual-core 240MHz MCU with Wi-Fi & BLE</td>
+            </tr>
+            <tr>
+                <td><b>R1, R2</b></td>
+                <td>100 &Omega; ±1%</td>
+                <td>0805 SMD / 0603</td>
+                <td>ADC Low-Pass Filter Series Resistors (GPIO 1 & 2)</td>
+            </tr>
+            <tr>
+                <td><b>C1, C2</b></td>
+                <td>100 nF 50V X7R</td>
+                <td>0805 SMD / 0603</td>
+                <td>ADC Low-Pass Filter Shunt Capacitors</td>
+            </tr>
+            <tr>
+                <td><b>R3, R4</b></td>
+                <td>4.7 k&Omega; ±5%</td>
+                <td>0805 SMD</td>
+                <td>I2C Bus Pull-Ups to +3V3 (SDA & SCL)</td>
+            </tr>
+            <tr>
+                <td><b>R5</b></td>
+                <td>4.7 k&Omega; ±5%</td>
+                <td>0805 SMD</td>
+                <td>DHT11 Single-Wire Data Pull-Up to +3V3</td>
+            </tr>
+            <tr>
+                <td><b>R6, R7</b></td>
+                <td>10 k&Omega; / 1 k&Omega;</td>
+                <td>0805 SMD</td>
+                <td>Flow Sensor Pull-Up (10k) and Series Limit (1k)</td>
+            </tr>
+            <tr>
+                <td><b>C3, C4</b></td>
+                <td>100 &mu;F 25V / 10 &mu;F</td>
+                <td>Radial Electrolytic / 1206</td>
+                <td>Bulk Power Rail Decoupling (+5V & +3.3V)</td>
+            </tr>
+            <tr>
+                <td><b>D1</b></td>
+                <td>SS34 (Schottky)</td>
+                <td>SMA / DO-214AC</td>
+                <td>Reverse Polarity Protection Diode on Main DC In</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <div class="footer">
+        <span>ESP32-S3 Module 2 PCB Hardware Design Specification</span>
+        <span>Confidential & Proprietary — Smart Aquaculture / Hydroponics</span>
+        <span>Page 2 of 2</span>
+    </div>
+
+</body>
+</html>

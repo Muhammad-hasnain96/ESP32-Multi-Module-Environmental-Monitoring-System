@@ -111,8 +111,8 @@ Preferences prefWifi;
 Preferences prefAuth;
 Preferences prefLimits;
 
-String wifi_ssid = "Meeting Room";
-String wifi_pass = "Shahid786$$";
+String wifi_ssid = "DS-Guest";
+String wifi_pass = "Shahid786";
 String auth_user = "admin";
 String auth_pass = "admin";
 
@@ -1867,8 +1867,8 @@ void setup() {
 
     // 6. Preferences for WiFi, Auth & Limits
     prefWifi.begin("m2-wifi", false);
-    wifi_ssid = prefWifi.getString("ssid", "Meeting Room");
-    wifi_pass = prefWifi.getString("pass", "Shahid786$$");
+    wifi_ssid = prefWifi.getString("ssid", "DS-Guest");
+    wifi_pass = prefWifi.getString("pass", "Shahid786");
 
     prefAuth.begin("m2-auth", false);
     auth_user = prefAuth.getString("user", "admin");

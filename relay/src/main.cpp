@@ -122,15 +122,23 @@ String lcdStatusStr = "Scanning I2C...";
 
 // Relay Config
 struct RelayConfig {
-    int mode;        // 0: Manual, 1: Auto Temp, 2: Auto Hum, 3: Auto Ammonia (NH3)
+    char name[16];   // Custom name (e.g. "Exhaust Fan 1")
+    int sensor;      // 0: None/Manual, 1: Avg Temp, 2: Avg Hum, 3: DHT1 Temp, 4: DHT1 Hum, 5: DHT2 Temp, 6: DHT2 Hum, 7: DHT3 Temp, 8: DHT3 Hum, 9: NH3, 10: Flow, 11: Pure Timer
+    int mode;        // 0: Threshold Only, 1: Timer + Threshold Override, 2: Pure Timer, 3: Manual
     float minVal;    // Min threshold
     float maxVal;    // Max threshold
-    int action;      // 0: Above Max ON, 1: Below Min ON, 2: Inside Range ON
+    int action;      // 0: Outside Range ON (<=Min or >=Max), 1: Inside Range ON, 2: Above Max ON, 3: Below Min ON
+    int timerOnSec;  // Cyclic Run time in seconds
+    int timerOffSec; // Cyclic Pause time in seconds
 };
 
 RelayConfig configs[NUM_RELAYS];
 bool relayStates[NUM_RELAYS] = { false };
 String relayReason[NUM_RELAYS];
+
+// Runtime tracking for cyclic timers
+unsigned long relayTimerLastSwitch[NUM_RELAYS] = { 0 };
+bool          relayTimerInOnPhase[NUM_RELAYS]  = { false };
 
 // Sensor readings (3x DHT11 & Averages)
 float temp1 = 0.0, temp2 = 0.0, temp3 = 0.0;
@@ -138,9 +146,72 @@ float hum1  = 0.0, hum2  = 0.0, hum3  = 0.0;
 bool valid1 = false, valid2 = false, valid3 = false;
 float avgTemp = 0.0;
 float avgHum  = 0.0;
-float currentTemp = 0.0; // Relay decisions are made on currentTemp = avgTemp
-float currentHum  = 0.0; // Relay decisions are made on currentHum = avgHum
+float currentTemp = 0.0;
+float currentHum  = 0.0;
 bool sensorValid = false;
+
+// Sensor Calibration Config & Offsets
+struct CalibrationConfig {
+    float t1Offset;    // °C offset
+    float h1Offset;    // % offset
+    float t2Offset;    // °C offset
+    float h2Offset;    // % offset
+    float t3Offset;    // °C offset
+    float h3Offset;    // % offset
+    float nh3Factor;   // Multiplier factor (default 1.0)
+    float flowFactor;  // Pulses per sec per L/min (default 7.5)
+};
+CalibrationConfig calib = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 7.5f };
+
+// Raw sensor readings before calibration
+float rawTemp1 = 0.0, rawTemp2 = 0.0, rawTemp3 = 0.0;
+float rawHum1  = 0.0, rawHum2  = 0.0, rawHum3  = 0.0;
+float rawNH3   = 0.0;
+
+// Helper: Sensor names and units
+const char* getSensorName(int s) {
+    switch (s) {
+        case 1: return "Avg Temp";
+        case 2: return "Avg Hum";
+        case 3: return "Sens1 T";
+        case 4: return "Sens1 H";
+        case 5: return "Sens2 T";
+        case 6: return "Sens2 H";
+        case 7: return "Sens3 T";
+        case 8: return "Sens3 H";
+        case 9: return "NH3 Gas";
+        case 10: return "Flow";
+        case 11: return "PureTmr";
+        default: return "Manual";
+    }
+}
+
+const char* getSensorUnit(int s) {
+    if (s == 1 || s == 3 || s == 5 || s == 7) return "C";
+    if (s == 2 || s == 4 || s == 6 || s == 8) return "%";
+    if (s == 9) return "p"; // ppm
+    if (s == 10) return "L"; // L/min
+    return "";
+}
+
+bool getSensorReading(int s, float &val, bool &isValid) {
+    isValid = false;
+    val = 0.0f;
+    switch (s) {
+        case 1: val = avgTemp; isValid = sensorValid; break;
+        case 2: val = avgHum; isValid = sensorValid; break;
+        case 3: val = temp1; isValid = valid1; break;
+        case 4: val = hum1; isValid = valid1; break;
+        case 5: val = temp2; isValid = valid2; break;
+        case 6: val = hum2; isValid = valid2; break;
+        case 7: val = temp3; isValid = valid3; break;
+        case 8: val = hum3; isValid = valid3; break;
+        case 9: val = currentNH3; isValid = (millis() - mq137WarmStart >= MQ137_WARMUP); break;
+        case 10: val = flowRate; isValid = true; break;
+        default: isValid = false; break;
+    }
+    return isValid;
+}
 
 // Network & Web
 const char* AP_SSID = "ESP32-Relay-Controller";
@@ -225,6 +296,8 @@ void handleScanNetworks();
 void handleSaveWifi();
 void handleResetWifi();
 void setAllAuto();
+void saveCalibration();
+void handleSaveCalibration();
 
 void setup() {
     Serial.begin(115200);
@@ -274,33 +347,89 @@ void setup() {
     // Load Relay Thresholds
     loadRelayConfigs();
 
-    delay(1500);
+    // --- SEQUENTIAL STARTUP SEQUENCE ("BAARI BAARI" ALL RELAYS ON) ---
+    Serial.println("⚡ Running Sequential Relay Startup Sequence across all 16 relays...");
+    if (lcdAvailable && pLcd != nullptr) {
+        pLcd->clear();
+        pLcd->setCursor(0, 0); pLcd->print("= SEQUENTIAL START =");
+        pLcd->setCursor(0, 1); pLcd->print("16 Relays Turning ON");
+    }
+    for (int i = 0; i < NUM_RELAYS; i++) {
+        digitalWrite(RELAY_PINS[i], RELAY_ON);
+        relayStates[i] = true;
+        relayReason[i] = "Startup Sequence ON";
+        if (lcdAvailable && pLcd != nullptr) {
+            pLcd->setCursor(0, 2);
+            char b[21]; snprintf(b, sizeof(b), "Relay %02d ON [GP%02d]  ", i + 1, RELAY_PINS[i]);
+            pLcd->print(b);
+        }
+        Serial.printf("⚡ Startup: Relay %02d (GPIO %02d) -> ON\n", i + 1, RELAY_PINS[i]);
+        delay(250); // 250ms spacing between each relay turning ON
+    }
+    if (lcdAvailable && pLcd != nullptr) {
+        pLcd->setCursor(0, 2); pLcd->print("All 16 Relays ON    ");
+        pLcd->setCursor(0, 3); pLcd->print("Applying Sensor Mode");
+    }
+    Serial.println("✅ All 16 relays ON. Holding for 1.2s before applying sensor rules...");
+    delay(1200);
+
     readDHTSensor();
     evaluateAutoRules();
     Serial.println("\n\n========================================================");
     Serial.println("  ⚡ ESP32-S3 16-RELAY SMART CLIMATE HUB (LCD + BUTTONS)");
     Serial.println("========================================================");
+    for (int i = 0; i < NUM_RELAYS; i++) {
+        Serial.printf("📌 R%02d [%s]: Mode=%d, Sensor=%d(%s), Min=%.1f, Max=%.1f, Act=%d -> %s | %s\n",
+            i + 1, configs[i].name, configs[i].mode, configs[i].sensor, getSensorName(configs[i].sensor),
+            configs[i].minVal, configs[i].maxVal, configs[i].action,
+            relayStates[i] ? "ON" : "OFF", relayReason[i].c_str());
+    }
 
     // WiFi Setup
     prefWifi.begin("wifi-config", false);
-    saved_ssid = prefWifi.getString("ssid", "");
-    saved_pass = prefWifi.getString("pass", "");
+    saved_ssid = prefWifi.getString("ssid", "DS-Guest");
+    saved_pass = prefWifi.getString("pass", "Shahid786");
 
     WiFi.mode(WIFI_AP_STA);
     WiFi.softAP(AP_SSID, AP_PASS);
 
     if (saved_ssid.length() > 0) {
         sta_status_str = "Connecting...";
+        Serial.printf("📡 Connecting to WiFi: %s ...\n", saved_ssid.c_str());
+
+        // Configure Static IP 192.168.0.22 for Router
+        IPAddress local_IP(192, 168, 0, 22);
+        IPAddress gateway(192, 168, 0, 1);
+        IPAddress subnet(255, 255, 255, 0);
+        IPAddress primaryDNS(192, 168, 0, 1);
+        IPAddress secondaryDNS(8, 8, 8, 8);
+        WiFi.config(local_IP, gateway, subnet, primaryDNS, secondaryDNS);
+
         WiFi.begin(saved_ssid.c_str(), saved_pass.c_str());
         int count = 0;
-        while (WiFi.status() != WL_CONNECTED && count < 15) {
-            delay(400);
+        while (WiFi.status() != WL_CONNECTED && count < 20) {
+            delay(350);
             count++;
         }
         if (WiFi.status() == WL_CONNECTED) {
             sta_status_str = "Connected";
+            Serial.printf("✅ Connected to '%s'! IP Address: %s\n", saved_ssid.c_str(), WiFi.localIP().toString().c_str());
+            if (lcdAvailable && pLcd != nullptr) {
+                pLcd->clear();
+                pLcd->setCursor(0, 0); pLcd->print("= WIFI CONNECTED! = ");
+                pLcd->setCursor(0, 1);
+                char bSsid[21]; snprintf(bSsid, sizeof(bSsid), "SSID:%-15.15s", saved_ssid.c_str());
+                pLcd->print(bSsid);
+                pLcd->setCursor(0, 2);
+                char bIp[21]; snprintf(bIp, sizeof(bIp), "IP: %-16.16s", WiFi.localIP().toString().c_str());
+                pLcd->print(bIp);
+                pLcd->setCursor(0, 3); pLcd->print("PORT: 80 (HTTP)     ");
+                delay(1500);
+                pLcd->clear();
+            }
         } else {
             sta_status_str = "Not Connected";
+            Serial.println("⚠️ Could not connect to Station WiFi, AP mode remains active.");
         }
     }
 
@@ -319,6 +448,7 @@ void setup() {
     server.on("/scan", HTTP_GET, handleScanNetworks);
     server.on("/savewifi", HTTP_POST, handleSaveWifi);
     server.on("/resetwifi", HTTP_POST, handleResetWifi);
+    server.on("/savecalib", HTTP_POST, handleSaveCalibration);
 
     server.begin();
     Serial.println("🚀 Web Server started successfully!");
@@ -350,13 +480,14 @@ void loop() {
         prevPulseCount = currentPulses;
         totalPulses = currentPulses;
 
-        // Standard 1/2" flow sensor calibration: 7.5 pulses per sec = 1.0 L/min
-        flowRate = ((float)deltaPulses * 1000.0f / (float)dt) / 7.5f;
+        // Flow sensor calibration using dynamic calib.flowFactor (default 7.5 pulses per sec = 1.0 L/min)
+        float kFactor = (calib.flowFactor > 0.1f) ? calib.flowFactor : 7.5f;
+        flowRate = ((float)deltaPulses * 1000.0f / (float)dt) / kFactor;
         if (flowRate < 0.05f) flowRate = 0.0f; // Noise suppression
         totalLiters += (flowRate / 60.0f) * ((float)dt / 1000.0f);
     }
 
-    // Read Sensor & Evaluate Rules every 2 seconds
+    // Read Sensors every 2 seconds
     static unsigned long lastSensor = 0;
     if (millis() - lastSensor > 2000) {
         lastSensor = millis();
@@ -364,11 +495,29 @@ void loop() {
 
         // Read MQ-137 Ammonia Sensor
         float mqV = 0.0f;
-        currentNH3 = readMQ137(mqV);
+        rawNH3 = readMQ137(mqV);
+        float nh3Mult = (calib.nh3Factor > 0.01f) ? calib.nh3Factor : 1.0f;
+        currentNH3 = rawNH3 * nh3Mult;
         currentMQ137V = mqV;
         currentNH3Alert = (digitalRead(MQ137_DO) == LOW); // LOW = Gas alert triggered
+    }
 
+    // Evaluate Relay Rules & Cyclic Timers every 500ms
+    static unsigned long lastRuleEval = 0;
+    if (millis() - lastRuleEval >= 500) {
+        lastRuleEval = millis();
         evaluateAutoRules();
+    }
+
+    static unsigned long lastRelayReport = 0;
+    if (millis() - lastRelayReport > 5000) {
+        lastRelayReport = millis();
+        Serial.printf("⚡ RELAY STATUS [AvgTemp: %.1fC, AvgHum: %.1f%%, Sensor: %s]:\n", avgTemp, avgHum, sensorValid ? "OK" : "NC");
+        for (int i = 0; i < NUM_RELAYS; i++) {
+            Serial.printf("  R%02d [%s]: Mode=%d, Sens=%d, St=%s | %s\n",
+                i + 1, configs[i].name, configs[i].mode, configs[i].sensor,
+                relayStates[i] ? "ON" : "OFF", relayReason[i].c_str());
+        }
     }
 
     // Read Buttons
@@ -392,24 +541,10 @@ void loop() {
 // --- PROVEN BATTLE-TESTED LCD INITIALIZER ---
 
 void initLCD() {
-    // 1. Hardware I2C bus recovery (clock SCL 16 times in case slave is latching SDA low)
-    pinMode(I2C_SDA, INPUT_PULLUP);
-    pinMode(I2C_SCL, OUTPUT);
-    for (int i = 0; i < 16; i++) {
-        digitalWrite(I2C_SCL, LOW);
-        delayMicroseconds(10);
-        digitalWrite(I2C_SCL, HIGH);
-        delayMicroseconds(10);
-    }
-    pinMode(I2C_SDA, INPUT_PULLUP);
-    pinMode(I2C_SCL, INPUT_PULLUP);
-    delay(20);
-
-    Wire.begin(I2C_SDA, I2C_SCL, 50000); // 50kHz for rock-solid stability over jumper wires
-    Wire.setTimeOut(30);
+    Wire.begin(I2C_SDA, I2C_SCL, 100000);
 
     byte lcdAddr = 0;
-    // Fast check for common PCF8574 (0x27) and PCF8574A (0x3F)
+    // Fast check 0x27 and 0x3F first
     Wire.beginTransmission(0x27);
     if (Wire.endTransmission() == 0) {
         lcdAddr = 0x27;
@@ -436,17 +571,8 @@ void initLCD() {
 
         if (pLcd != nullptr) delete pLcd;
         pLcd = new LiquidCrystal_I2C(detectedLcdAddr, 20, 4);
-
-        // Standard library setup
         pLcd->init();
-
-        // CRITICAL FIX: Library init() internally calls Wire.begin() with no parameters,
-        // which resets ESP32 I2C pins to defaults! We must re-assert pins AND explicitly
-        // call begin(20, 4) so HD44780 4-bit initialization pulses are sent over GPIO 17 & 18!
-        Wire.begin(I2C_SDA, I2C_SCL, 50000);
-        pLcd->begin(20, 4);
         pLcd->backlight();
-        pLcd->display();
         pLcd->clear();
 
         pLcd->setCursor(0, 0); pLcd->print("====================");
@@ -455,7 +581,7 @@ void initLCD() {
         pLcd->setCursor(0, 3); pLcd->print("====================");
 
         lcdAvailable = true;
-        delay(1000);
+        delay(800);
         pLcd->clear();
         updateLCD(); // Immediately render active screen!
     } else {
@@ -678,10 +804,10 @@ void updateButtons() {
 
         case STATE_RELAY_MENU:
             if (bUp) {
-                relayMenuIndex = (relayMenuIndex - 1 + 3) % 3;
+                relayMenuIndex = (relayMenuIndex - 1 + 6) % 6;
                 updateLCD();
             } else if (bDown) {
-                relayMenuIndex = (relayMenuIndex + 1) % 3;
+                relayMenuIndex = (relayMenuIndex + 1) % 6;
                 updateLCD();
             } else if (bBack) {
                 currentMenu = STATE_SELECT_RELAY;
@@ -689,21 +815,28 @@ void updateButtons() {
                 updateLCD();
             } else if (bMenu) {
                 if (relayMenuIndex == 0) {
-                    // Toggle Mode between Auto Temp (1), Auto Hum (2), and Auto Ammonia (3)
-                    if (configs[selectedRelay].mode == 1) configs[selectedRelay].mode = 2;
-                    else if (configs[selectedRelay].mode == 2) configs[selectedRelay].mode = 3;
-                    else configs[selectedRelay].mode = 1;
+                    // Cycle Sensor: 1(AvgT) -> 2(AvgH) -> 3(DHT1 T) -> ... -> 11(PureTmr) -> 0(Manual) -> 1
+                    configs[selectedRelay].sensor = (configs[selectedRelay].sensor + 1) % 12;
+                    relayTimerLastSwitch[selectedRelay] = 0;
+                    saveRelayConfig(selectedRelay);
+                    readDHTSensor();
+                    evaluateSingleRelay(selectedRelay, true);
 
-                    if (configs[selectedRelay].mode == 3) {
-                        configs[selectedRelay].minVal = globalNH3Min;
-                        configs[selectedRelay].maxVal = globalNH3Max;
-                    } else if (configs[selectedRelay].mode == 2) {
-                        configs[selectedRelay].minVal = globalHumMin;
-                        configs[selectedRelay].maxVal = globalHumMax;
-                    } else {
-                        configs[selectedRelay].minVal = globalTempMin;
-                        configs[selectedRelay].maxVal = globalTempMax;
+                    if (lcdAvailable && pLcd != nullptr) {
+                        pLcd->clear();
+                        pLcd->setCursor(2, 1);
+                        pLcd->print("Sensor Assigned!");
+                        pLcd->setCursor(2, 2);
+                        char sbuf[21]; snprintf(sbuf, sizeof(sbuf), "-> %s", getSensorName(configs[selectedRelay].sensor));
+                        pLcd->print(sbuf);
+                        delay(600);
+                        pLcd->clear();
                     }
+                    updateLCD();
+                } else if (relayMenuIndex == 1) {
+                    // Cycle Mode: 0(Thresh Only) -> 1(Timer+Override) -> 2(Pure Timer) -> 3(Manual) -> 0
+                    configs[selectedRelay].mode = (configs[selectedRelay].mode + 1) % 4;
+                    relayTimerLastSwitch[selectedRelay] = 0;
                     saveRelayConfig(selectedRelay);
                     readDHTSensor();
                     evaluateSingleRelay(selectedRelay, true);
@@ -713,17 +846,29 @@ void updateButtons() {
                         pLcd->setCursor(3, 1);
                         pLcd->print("Mode Updated!");
                         pLcd->setCursor(1, 2);
-                        if (configs[selectedRelay].mode == 3) pLcd->print("-> Auto Ammonia NH3");
-                        else if (configs[selectedRelay].mode == 2) pLcd->print("-> Auto Humidity");
-                        else pLcd->print("-> Auto Temperature");
+                        if (configs[selectedRelay].mode == 0) pLcd->print("-> Threshold Only");
+                        else if (configs[selectedRelay].mode == 1) pLcd->print("-> Timer+Override");
+                        else if (configs[selectedRelay].mode == 2) pLcd->print("-> Pure Cyclic Tmr");
+                        else pLcd->print("-> Manual Control");
                         delay(600);
                         pLcd->clear();
                     }
                     updateLCD();
                 } else {
                     currentMenu = STATE_EDIT_VALUE;
-                    selectedTarget = (relayMenuIndex == 1) ? 0 : 1;
-                    editingVal = (selectedTarget == 0) ? configs[selectedRelay].minVal : configs[selectedRelay].maxVal;
+                    if (relayMenuIndex == 2) {
+                        selectedTarget = 0; // Min
+                        editingVal = configs[selectedRelay].minVal;
+                    } else if (relayMenuIndex == 3) {
+                        selectedTarget = 1; // Max
+                        editingVal = configs[selectedRelay].maxVal;
+                    } else if (relayMenuIndex == 4) {
+                        selectedTarget = 2; // T-On
+                        editingVal = configs[selectedRelay].timerOnSec;
+                    } else if (relayMenuIndex == 5) {
+                        selectedTarget = 3; // T-Off
+                        editingVal = configs[selectedRelay].timerOffSec;
+                    }
                     if (lcdAvailable && pLcd != nullptr) pLcd->clear();
                     updateLCD();
                 }
@@ -732,25 +877,39 @@ void updateButtons() {
 
         case STATE_EDIT_VALUE:
             if (bUp) {
-                if (configs[selectedRelay].mode == 3) {
+                if (selectedTarget == 2 || selectedTarget == 3) { // Timer On or Off
+                    editingVal += (editingVal >= 60 ? 10 : 5);
+                    if (editingVal > 3600) editingVal = 3600;
+                } else if (configs[selectedRelay].sensor == 9) { // NH3
                     editingVal += 1.0;
                     if (editingVal > 200.0) editingVal = 200.0;
-                } else if (configs[selectedRelay].mode == 2) {
+                } else if (configs[selectedRelay].sensor == 10) { // Flow
+                    editingVal += 0.5;
+                    if (editingVal > 50.0) editingVal = 50.0;
+                } else if (configs[selectedRelay].sensor == 2 || configs[selectedRelay].sensor == 4 || 
+                           configs[selectedRelay].sensor == 6 || configs[selectedRelay].sensor == 8) { // Humidity
                     editingVal += 1.0;
                     if (editingVal > 99.0) editingVal = 99.0;
-                } else {
+                } else { // Temperature
                     editingVal += 0.5;
                     if (editingVal > 60.0) editingVal = 60.0;
                 }
                 updateLCD();
             } else if (bDown) {
-                if (configs[selectedRelay].mode == 3) {
+                if (selectedTarget == 2 || selectedTarget == 3) { // Timer On or Off
+                    editingVal -= (editingVal > 60 ? 10 : 5);
+                    if (editingVal < 5) editingVal = 5;
+                } else if (configs[selectedRelay].sensor == 9) { // NH3
                     editingVal -= 1.0;
                     if (editingVal < 0.0) editingVal = 0.0;
-                } else if (configs[selectedRelay].mode == 2) {
+                } else if (configs[selectedRelay].sensor == 10) { // Flow
+                    editingVal -= 0.5;
+                    if (editingVal < 0.0) editingVal = 0.0;
+                } else if (configs[selectedRelay].sensor == 2 || configs[selectedRelay].sensor == 4 || 
+                           configs[selectedRelay].sensor == 6 || configs[selectedRelay].sensor == 8) { // Humidity
                     editingVal -= 1.0;
                     if (editingVal < 10.0) editingVal = 10.0;
-                } else {
+                } else { // Temperature
                     editingVal -= 0.5;
                     if (editingVal < 10.0) editingVal = 10.0;
                 }
@@ -770,9 +929,16 @@ void updateButtons() {
                 // Save for selected relay
                 if (selectedTarget == 0) {
                     configs[selectedRelay].minVal = editingVal;
-                } else {
+                } else if (selectedTarget == 1) {
                     configs[selectedRelay].maxVal = editingVal;
+                } else if (selectedTarget == 2) {
+                    configs[selectedRelay].timerOnSec = (int)editingVal;
+                    relayTimerLastSwitch[selectedRelay] = 0;
+                } else if (selectedTarget == 3) {
+                    configs[selectedRelay].timerOffSec = (int)editingVal;
+                    relayTimerLastSwitch[selectedRelay] = 0;
                 }
+
                 if (configs[selectedRelay].minVal > configs[selectedRelay].maxVal) {
                     float t = configs[selectedRelay].minVal;
                     configs[selectedRelay].minVal = configs[selectedRelay].maxVal;
@@ -781,8 +947,10 @@ void updateButtons() {
                 saveRelayConfig(selectedRelay);
                 readDHTSensor();
                 evaluateSingleRelay(selectedRelay, true);
-                Serial.printf("⚡ LCD Saved Relay %d: Mode=%d, Min=%.1f, Max=%.1f -> State: %s (%s)\n",
-                    selectedRelay + 1, configs[selectedRelay].mode, configs[selectedRelay].minVal, configs[selectedRelay].maxVal,
+                Serial.printf("⚡ LCD Saved Relay %d [%s]: Sensor=%d, Mode=%d, Min=%.1f, Max=%.1f, Ton=%d, Toff=%d -> State: %s (%s)\n",
+                    selectedRelay + 1, configs[selectedRelay].name, configs[selectedRelay].sensor, configs[selectedRelay].mode,
+                    configs[selectedRelay].minVal, configs[selectedRelay].maxVal,
+                    configs[selectedRelay].timerOnSec, configs[selectedRelay].timerOffSec,
                     relayStates[selectedRelay] ? "ON" : "OFF", relayReason[selectedRelay].c_str());
 
                 if (lcdAvailable && pLcd != nullptr) {
@@ -791,8 +959,14 @@ void updateButtons() {
                     pLcd->print("*** SAVED! ***");
                     pLcd->setCursor(1, 2);
                     char sb[21];
-                    const char* u = (configs[selectedRelay].mode == 3) ? "p" : ((configs[selectedRelay].mode == 2) ? "%" : "C");
-                    snprintf(sb, sizeof(sb), "Mn:%3.0f%s  Mx:%3.0f%s", configs[selectedRelay].minVal, u, configs[selectedRelay].maxVal, u);
+                    if (selectedTarget == 2) {
+                        snprintf(sb, sizeof(sb), "Run Time: %d sec", configs[selectedRelay].timerOnSec);
+                    } else if (selectedTarget == 3) {
+                        snprintf(sb, sizeof(sb), "Pause: %d sec", configs[selectedRelay].timerOffSec);
+                    } else {
+                        const char* u = getSensorUnit(configs[selectedRelay].sensor);
+                        snprintf(sb, sizeof(sb), "Mn:%3.0f%s  Mx:%3.0f%s", configs[selectedRelay].minVal, u, configs[selectedRelay].maxVal, u);
+                    }
                     pLcd->print(sb);
                     delay(700);
                     pLcd->clear();
@@ -1045,18 +1219,20 @@ void drawSelectRelayScreen() {
 
     pLcd->setCursor(0, 1);
     char buf1[21];
-    snprintf(buf1, sizeof(buf1), "> Relay %02d (GPIO %02d) ", selectedRelay + 1, RELAY_PINS[selectedRelay]);
+    // Show custom name (or Relay 01) up to 13 chars
+    snprintf(buf1, sizeof(buf1), "> R%02d: %-13.13s", selectedRelay + 1, configs[selectedRelay].name);
     pLcd->print(buf1);
 
     pLcd->setCursor(0, 2);
     char buf2[21];
-    if (configs[selectedRelay].mode == 3) {
-        snprintf(buf2, sizeof(buf2), "[NH3 ] Mn:%2.0f  Mx:%2.0f ", configs[selectedRelay].minVal, configs[selectedRelay].maxVal);
-    } else if (configs[selectedRelay].mode == 2) {
-        snprintf(buf2, sizeof(buf2), "[HUM ] Mn:%2.0f%% Mx:%2.0f%% ", configs[selectedRelay].minVal, configs[selectedRelay].maxVal);
-    } else {
-        snprintf(buf2, sizeof(buf2), "[TEMP] Mn:%4.1f Mx:%4.1f", configs[selectedRelay].minVal, configs[selectedRelay].maxVal);
-    }
+    const char* mShort = "Thrs";
+    if (configs[selectedRelay].mode == 1) mShort = "T+Sn";
+    else if (configs[selectedRelay].mode == 2) mShort = "Pure";
+    else if (configs[selectedRelay].mode == 3) mShort = "Man ";
+
+    const char* sName = getSensorName(configs[selectedRelay].sensor);
+    const char* stStr = relayStates[selectedRelay] ? "ON " : "OFF";
+    snprintf(buf2, sizeof(buf2), "S:%-7.7s %-4.4s %-3s", sName, mShort, stStr);
     pLcd->print(buf2);
 
     pLcd->setCursor(0, 3);
@@ -1066,33 +1242,54 @@ void drawSelectRelayScreen() {
 void drawRelayMenuScreen() {
     pLcd->setCursor(0, 0);
     char b0[21];
-    snprintf(b0, sizeof(b0), "-- RELAY %02d SETUP --", selectedRelay + 1);
+    snprintf(b0, sizeof(b0), "-- R%02d: %-10.10s -", selectedRelay + 1, configs[selectedRelay].name);
     pLcd->print(b0);
 
-    const char* modeStr = (configs[selectedRelay].mode == 3) ? "Auto NH3 " : ((configs[selectedRelay].mode == 2) ? "Auto Hum " : "Auto Temp");
-    const char* uStr = (configs[selectedRelay].mode == 3) ? "ppm" : ((configs[selectedRelay].mode == 2) ? "%  " : "C  ");
+    const char* mStr = "Threshold";
+    if (configs[selectedRelay].mode == 1) mStr = "Tmr+Sens ";
+    else if (configs[selectedRelay].mode == 2) mStr = "Pure Tmr ";
+    else if (configs[selectedRelay].mode == 3) mStr = "Manual   ";
 
-    pLcd->setCursor(0, 1);
-    char b1[21];
-    snprintf(b1, sizeof(b1), "%s 1.Mode:%s", relayMenuIndex == 0 ? ">" : " ", modeStr);
-    pLcd->print(b1);
+    const char* uStr = getSensorUnit(configs[selectedRelay].sensor);
 
-    pLcd->setCursor(0, 2);
-    char b2[21];
-    snprintf(b2, sizeof(b2), "%s 2.Min : %4.1f %s", relayMenuIndex == 1 ? ">" : " ", configs[selectedRelay].minVal, uStr);
-    pLcd->print(b2);
+    // Sliding window of 3 rows across 6 items (0 to 5)
+    int startIdx = (relayMenuIndex >= 3) ? (relayMenuIndex - 2) : 0;
+    if (startIdx > 3) startIdx = 3;
 
-    pLcd->setCursor(0, 3);
-    char b3[21];
-    snprintf(b3, sizeof(b3), "%s 3.Max : %4.1f %s", relayMenuIndex == 2 ? ">" : " ", configs[selectedRelay].maxVal, uStr);
-    pLcd->print(b3);
+    for (int row = 1; row <= 3; row++) {
+        int item = startIdx + (row - 1);
+        pLcd->setCursor(0, row);
+        char lineBuf[21];
+        char cursorChar = (item == relayMenuIndex) ? '>' : ' ';
+
+        if (item == 0) {
+            snprintf(lineBuf, sizeof(lineBuf), "%c1.Sens:%-10.10s", cursorChar, getSensorName(configs[selectedRelay].sensor));
+        } else if (item == 1) {
+            snprintf(lineBuf, sizeof(lineBuf), "%c2.Mode:%-10.10s", cursorChar, mStr);
+        } else if (item == 2) {
+            snprintf(lineBuf, sizeof(lineBuf), "%c3.Min :%5.1f%-3s", cursorChar, configs[selectedRelay].minVal, uStr);
+        } else if (item == 3) {
+            snprintf(lineBuf, sizeof(lineBuf), "%c4.Max :%5.1f%-3s", cursorChar, configs[selectedRelay].maxVal, uStr);
+        } else if (item == 4) {
+            snprintf(lineBuf, sizeof(lineBuf), "%c5.T-On:%4d sec", cursorChar, configs[selectedRelay].timerOnSec);
+        } else if (item == 5) {
+            snprintf(lineBuf, sizeof(lineBuf), "%c6.T-Off:%3d sec", cursorChar, configs[selectedRelay].timerOffSec);
+        }
+        pLcd->print(lineBuf);
+    }
 }
 
 void drawEditValueScreen() {
     pLcd->setCursor(0, 0);
     char b0[21];
-    const char* typeName = (configs[selectedRelay].mode == 3) ? "NH3 " : ((configs[selectedRelay].mode == 2) ? "HUM " : "TEMP");
-    snprintf(b0, sizeof(b0), "RELAY %02d: %s %s", selectedRelay + 1, selectedTarget == 0 ? "MIN" : "MAX", typeName);
+    if (selectedTarget == 2) {
+        snprintf(b0, sizeof(b0), "R%02d: RUN TIME (SEC)", selectedRelay + 1);
+    } else if (selectedTarget == 3) {
+        snprintf(b0, sizeof(b0), "R%02d: PAUSE TIM(SEC)", selectedRelay + 1);
+    } else {
+        const char* sName = getSensorName(configs[selectedRelay].sensor);
+        snprintf(b0, sizeof(b0), "R%02d %s: %-8.8s", selectedRelay + 1, selectedTarget == 0 ? "MIN" : "MAX", sName);
+    }
     pLcd->print(b0);
 
     pLcd->setCursor(0, 1);
@@ -1100,12 +1297,16 @@ void drawEditValueScreen() {
 
     pLcd->setCursor(0, 2);
     char b2[21];
-    if (configs[selectedRelay].mode == 3) {
-        snprintf(b2, sizeof(b2), " >>> [ %4.1f ppm ] <<<", editingVal);
-    } else if (configs[selectedRelay].mode == 2) {
-        snprintf(b2, sizeof(b2), " >>> [ %4.1f %%  ] <<<", editingVal);
+    if (selectedTarget == 2 || selectedTarget == 3) {
+        int sec = (int)editingVal;
+        if (sec >= 60 && sec % 60 == 0) {
+            snprintf(b2, sizeof(b2), " >>> [ %3ds (%dm) ] <<<", sec, sec / 60);
+        } else {
+            snprintf(b2, sizeof(b2), " >>> [ %4d sec ] <<<", sec);
+        }
     } else {
-        snprintf(b2, sizeof(b2), " >>> [ %4.1f %cC ] <<<", editingVal, 223);
+        const char* u = getSensorUnit(configs[selectedRelay].sensor);
+        snprintf(b2, sizeof(b2), " >>> [ %5.1f %-2s ] <<<", editingVal, u);
     }
     pLcd->print(b2);
 
@@ -1127,9 +1328,27 @@ void readDHTSensor() {
     bool ok2 = !isnan(t2) && !isnan(h2) && t2 > -20.0 && t2 < 80.0;
     bool ok3 = !isnan(t3) && !isnan(h3) && t3 > -20.0 && t3 < 80.0;
 
-    if (ok1) { temp1 = t1; hum1 = h1; valid1 = true; }
-    if (ok2) { temp2 = t2; hum2 = h2; valid2 = true; }
-    if (ok3) { temp3 = t3; hum3 = h3; valid3 = true; }
+    if (ok1) {
+        rawTemp1 = t1;
+        rawHum1 = h1;
+        temp1 = rawTemp1 + calib.t1Offset;
+        hum1 = constrain(rawHum1 + calib.h1Offset, 0.0f, 100.0f);
+        valid1 = true;
+    }
+    if (ok2) {
+        rawTemp2 = t2;
+        rawHum2 = h2;
+        temp2 = rawTemp2 + calib.t2Offset;
+        hum2 = constrain(rawHum2 + calib.h2Offset, 0.0f, 100.0f);
+        valid2 = true;
+    }
+    if (ok3) {
+        rawTemp3 = t3;
+        rawHum3 = h3;
+        temp3 = rawTemp3 + calib.t3Offset;
+        hum3 = constrain(rawHum3 + calib.h3Offset, 0.0f, 100.0f);
+        valid3 = true;
+    }
 
     float sumT = 0.0;
     float sumH = 0.0;
@@ -1152,102 +1371,195 @@ void readDHTSensor() {
     static unsigned long lastLog = 0;
     if (millis() - lastLog > 4000) {
         lastLog = millis();
-        Serial.printf("🌡️ DHT11s -> T1:%s(%.1fC) | T2:%s(%.1fC) | T3:%s(%.1fC) => AVG: %.1fC, %.1f%%\n",
-            valid1 ? "OK" : "NC", temp1,
-            valid2 ? "OK" : "NC", temp2,
-            valid3 ? "OK" : "NC", temp3,
+        Serial.printf("🌡️ Sensors (Calibrated) -> S1:%s(%.1fC, raw:%.1f) | S2:%s(%.1fC, raw:%.1f) | S3:%s(%.1fC, raw:%.1f) => AVG: %.1fC, %.1f%%\n",
+            valid1 ? "OK" : "NC", temp1, rawTemp1,
+            valid2 ? "OK" : "NC", temp2, rawTemp2,
+            valid3 ? "OK" : "NC", temp3, rawTemp3,
             avgTemp, avgHum);
     }
 }
 
 void evaluateSingleRelay(int i, bool isConfigUpdate) {
-    if (configs[i].mode == 0) return;
-    if ((configs[i].mode == 1 || configs[i].mode == 2) && !sensorValid) return;
+    if (configs[i].mode == 3 || configs[i].sensor == 0) return; // Manual mode
 
-    float val = 0.0f;
-    String valUnit = "";
-    String typeName = "";
+    unsigned long now = millis();
 
-    if (configs[i].mode == 1) {
-        val = currentTemp;
-        valUnit = "°C";
-        typeName = "Avg Temp";
-    } else if (configs[i].mode == 2) {
-        val = currentHum;
-        valUnit = "%";
-        typeName = "Avg Hum";
-    } else if (configs[i].mode == 3) {
-        val = currentNH3;
-        valUnit = " ppm";
-        typeName = "Ammonia NH3";
-    } else {
+    // Reset timer phase on explicit config change
+    if (isConfigUpdate && (configs[i].mode == 1 || configs[i].mode == 2 || configs[i].sensor == 11)) {
+        relayTimerLastSwitch[i] = 0;
+    }
+
+    int onDur  = (configs[i].timerOnSec > 0) ? configs[i].timerOnSec : 30;
+    int offDur = (configs[i].timerOffSec > 0) ? configs[i].timerOffSec : 120;
+
+    // --- MODE 2 or SENSOR 11: PURE CYCLIC TIMER ---
+    if (configs[i].mode == 2 || configs[i].sensor == 11) {
+        if (relayTimerLastSwitch[i] == 0) {
+            relayTimerLastSwitch[i] = now;
+            relayTimerInOnPhase[i] = true;
+            setRelay(i, true, "⏱️ " + String(configs[i].name) + ": Timer ON (" + String(onDur) + "s)");
+            return;
+        }
+        unsigned long elapsed = (now - relayTimerLastSwitch[i]) / 1000;
+        if (relayTimerInOnPhase[i]) {
+            if (elapsed >= (unsigned long)onDur) {
+                relayTimerInOnPhase[i] = false;
+                relayTimerLastSwitch[i] = now;
+                setRelay(i, false, "⏱️ " + String(configs[i].name) + ": Timer OFF (" + String(offDur) + "s)");
+            } else {
+                int left = onDur - elapsed;
+                if (!relayStates[i]) setRelay(i, true, "⏱️ " + String(configs[i].name) + ": Timer ON (" + String(left) + "s left)");
+                else relayReason[i] = "⏱️ " + String(configs[i].name) + ": Timer ON (" + String(left) + "s left)";
+            }
+        } else {
+            if (elapsed >= (unsigned long)offDur) {
+                relayTimerInOnPhase[i] = true;
+                relayTimerLastSwitch[i] = now;
+                setRelay(i, true, "⏱️ " + String(configs[i].name) + ": Timer ON (" + String(onDur) + "s)");
+            } else {
+                int left = offDur - elapsed;
+                if (relayStates[i]) setRelay(i, false, "⏱️ " + String(configs[i].name) + ": Timer OFF (" + String(left) + "s left)");
+                else relayReason[i] = "⏱️ " + String(configs[i].name) + ": Timer OFF (" + String(left) + "s left)";
+            }
+        }
         return;
     }
 
+    // --- SENSOR READING FOR ASSIGNED SENSOR ---
+    float val = 0.0f;
+    bool isValid = false;
+    getSensorReading(configs[i].sensor, val, isValid);
+    if (!isValid) {
+        relayReason[i] = "⚠️ Sensor Offline (" + String(getSensorName(configs[i].sensor)) + ")";
+        return;
+    }
+
+    const char* uStr = getSensorUnit(configs[i].sensor);
+    const char* sName = getSensorName(configs[i].sensor);
     float minVal = configs[i].minVal;
     float maxVal = configs[i].maxVal;
+    if (minVal > maxVal) { float t = minVal; minVal = maxVal; maxVal = t; }
 
-    bool shouldBeOn = relayStates[i];
-    String reason = "";
+    bool thresholdTriggered = false;
+    bool targetState = false;
+    String trigReason = "";
 
     if (configs[i].action == 0) {
-        // Outside Range ON (User Requirement):
-        // 1. Relay ON when temp/hum/NH3 is EQUAL OR ABOVE maximum threshold (val >= maxVal)
-        // 2. Relay ON when temp/hum/NH3 is EQUAL OR BELOW minimum threshold (val <= minVal)
-        // 3. Relay automatically OFF between min and max thresholds (minVal < val < maxVal)
-        if (minVal > maxVal) { float t = minVal; minVal = maxVal; maxVal = t; configs[i].minVal = minVal; configs[i].maxVal = maxVal; }
+        // Outside Range ON (≤Min or ≥Max)
         if (val >= maxVal) {
-            shouldBeOn = true;
-            reason = "Auto ON: " + typeName + " " + String(val, 1) + valUnit + " >= Max " + String(maxVal, 1) + valUnit;
+            thresholdTriggered = true; targetState = true;
+            trigReason = "⚠️ " + String(configs[i].name) + " ON: " + sName + " " + String(val, 1) + uStr + " >= Max " + String(maxVal, 1) + uStr;
         } else if (val <= minVal) {
-            shouldBeOn = true;
-            reason = "Auto ON: " + typeName + " " + String(val, 1) + valUnit + " <= Min " + String(minVal, 1) + valUnit;
+            thresholdTriggered = true; targetState = true;
+            trigReason = "⚠️ " + String(configs[i].name) + " ON: " + sName + " " + String(val, 1) + uStr + " <= Min " + String(minVal, 1) + uStr;
         } else {
-            shouldBeOn = false;
-            reason = "Auto OFF: In Safe Range (" + String(minVal, 1) + " - " + String(maxVal, 1) + valUnit + ") [Val: " + String(val, 1) + valUnit + "]";
+            thresholdTriggered = false; targetState = false;
+            trigReason = "Safe Range: " + String(val, 1) + uStr + " (" + String(minVal, 1) + "-" + String(maxVal, 1) + uStr + ")";
         }
-    }
-    else if (configs[i].action == 1) { // Inside Range ON
-        if (minVal > maxVal) { float t = minVal; minVal = maxVal; maxVal = t; configs[i].minVal = minVal; configs[i].maxVal = maxVal; }
+    } else if (configs[i].action == 1) {
+        // Inside Range ON (Min to Max)
         if (val >= minVal && val <= maxVal) {
-            shouldBeOn = true;
-            reason = "Auto ON: In Range (" + String(minVal, 1) + " - " + String(maxVal, 1) + valUnit + ")";
+            thresholdTriggered = true; targetState = true;
+            trigReason = String("In Range: ") + sName + " " + String(val, 1) + uStr + " (ON)";
         } else {
-            shouldBeOn = false;
-            reason = "Auto OFF: Out of Range";
+            thresholdTriggered = false; targetState = false;
+            trigReason = String("Out of Range: ") + sName + " " + String(val, 1) + uStr + " (OFF)";
         }
-    }
-    else if (configs[i].action == 2) { // Above Max ON (Exhaust / Ventilation / Cooling)
-        if (minVal > maxVal) { float t = minVal; minVal = maxVal; maxVal = t; configs[i].minVal = minVal; configs[i].maxVal = maxVal; }
+    } else if (configs[i].action == 2) {
+        // Above Max ON (Cooling / Exhaust Fan)
         if (val >= maxVal) {
-            shouldBeOn = true;
-            reason = "Auto ON: " + typeName + " " + String(val, 1) + valUnit + " >= " + String(maxVal, 1) + valUnit;
+            thresholdTriggered = true; targetState = true;
+            trigReason = String("Above Max: ") + sName + " " + String(val, 1) + uStr + " >= " + String(maxVal, 1) + uStr + " (ON)";
         } else if (val <= minVal) {
-            shouldBeOn = false;
-            reason = "Auto OFF: " + typeName + " " + String(val, 1) + valUnit + " <= " + String(minVal, 1) + valUnit;
+            thresholdTriggered = false; targetState = false;
+            trigReason = String("Below Min: ") + sName + " " + String(val, 1) + uStr + " <= " + String(minVal, 1) + uStr + " (OFF)";
+        } else {
+            // Deadband hysteresis: maintain current state
+            targetState = relayStates[i];
+            thresholdTriggered = relayStates[i];
+            trigReason = String("Normal Band: ") + sName + " " + String(val, 1) + uStr + " (Hold " + (targetState ? "ON" : "OFF") + ")";
         }
-    }
-    else if (configs[i].action == 3) { // Below Min ON (Heating / Scrubbing Only)
-        if (minVal > maxVal) { float t = minVal; minVal = maxVal; maxVal = t; configs[i].minVal = minVal; configs[i].maxVal = maxVal; }
+    } else if (configs[i].action == 3) {
+        // Below Min ON (Heating / Scrub)
         if (val <= minVal) {
-            shouldBeOn = true;
-            reason = "Auto ON: " + typeName + " " + String(val, 1) + valUnit + " <= " + String(minVal, 1) + valUnit;
+            thresholdTriggered = true; targetState = true;
+            trigReason = String("Below Min: ") + sName + " " + String(val, 1) + uStr + " <= " + String(minVal, 1) + uStr + " (ON)";
         } else if (val >= maxVal) {
-            shouldBeOn = false;
-            reason = "Auto OFF: " + typeName + " " + String(val, 1) + valUnit + " >= " + String(maxVal, 1) + valUnit;
+            thresholdTriggered = false; targetState = false;
+            trigReason = String("Above Max: ") + sName + " " + String(val, 1) + uStr + " >= " + String(maxVal, 1) + uStr + " (OFF)";
+        } else {
+            // Deadband hysteresis: maintain current state
+            targetState = relayStates[i];
+            thresholdTriggered = relayStates[i];
+            trigReason = String("Normal Band: ") + sName + " " + String(val, 1) + uStr + " (Hold " + (targetState ? "ON" : "OFF") + ")";
         }
     }
 
-    if (shouldBeOn != relayStates[i]) {
-        setRelay(i, shouldBeOn, reason);
-    } else {
-        relayReason[i] = reason;
+    // MODE 1: TIMER + SENSOR THRESHOLD OVERRIDE
+    if (configs[i].mode == 1) {
+        if (thresholdTriggered && targetState) {
+            // Safety threshold OVERRIDES the timer!
+            if (relayStates[i] != targetState) {
+                setRelay(i, targetState, trigReason + " [OVERRIDE]");
+            } else {
+                relayReason[i] = trigReason + " [OVERRIDE]";
+            }
+            relayTimerLastSwitch[i] = now;
+            relayTimerInOnPhase[i] = false;
+            return;
+        }
+
+        // Within safe range: Cyclic Timer Duty Cycle runs!
+        if (relayTimerLastSwitch[i] == 0) {
+            relayTimerLastSwitch[i] = now;
+            relayTimerInOnPhase[i] = true;
+            setRelay(i, true, "⏱️ " + String(configs[i].name) + ": Timer ON (" + String(onDur) + "s) [Safe " + String(val, 1) + uStr + "]");
+            return;
+        }
+
+        unsigned long elapsed = (now - relayTimerLastSwitch[i]) / 1000;
+        if (relayTimerInOnPhase[i]) {
+            if (elapsed >= (unsigned long)onDur) {
+                relayTimerInOnPhase[i] = false;
+                relayTimerLastSwitch[i] = now;
+                setRelay(i, false, "⏱️ " + String(configs[i].name) + ": Timer OFF (" + String(offDur) + "s) [Safe " + String(val, 1) + uStr + "]");
+            } else {
+                int left = onDur - elapsed;
+                if (!relayStates[i]) setRelay(i, true, "⏱️ " + String(configs[i].name) + ": Timer ON (" + String(left) + "s) [Safe " + String(val, 1) + uStr + "]");
+                else relayReason[i] = "⏱️ " + String(configs[i].name) + ": Timer ON (" + String(left) + "s) [Safe " + String(val, 1) + uStr + "]";
+            }
+        } else {
+            if (elapsed >= (unsigned long)offDur) {
+                relayTimerInOnPhase[i] = true;
+                relayTimerLastSwitch[i] = now;
+                setRelay(i, true, "⏱️ " + String(configs[i].name) + ": Timer ON (" + String(onDur) + "s) [Safe " + String(val, 1) + uStr + "]");
+            } else {
+                int left = offDur - elapsed;
+                if (relayStates[i]) setRelay(i, false, "⏱️ " + String(configs[i].name) + ": Timer OFF (" + String(left) + "s) [Safe " + String(val, 1) + uStr + "]");
+                else relayReason[i] = "⏱️ " + String(configs[i].name) + ": Timer OFF (" + String(left) + "s) [Safe " + String(val, 1) + uStr + "]";
+            }
+        }
+        return;
+    }
+
+    // MODE 0: SENSOR THRESHOLD ONLY (NO TIMER)
+    if (configs[i].mode == 0) {
+        if (relayStates[i] != targetState) {
+            setRelay(i, targetState, trigReason);
+        } else {
+            relayReason[i] = trigReason;
+        }
     }
 }
 
 void evaluateAutoRules() {
     for (int i = 0; i < NUM_RELAYS; i++) {
+        bool prevState = relayStates[i];
         evaluateSingleRelay(i, false);
+        // Stagger switching so multiple relays turn ON/OFF sequentially ("baari baari")
+        if (prevState != relayStates[i]) {
+            delay(200);
+        }
     }
 }
 
@@ -1256,19 +1568,22 @@ void setRelay(int index, bool state, String reason) {
     relayStates[index] = state;
     relayReason[index] = reason;
     digitalWrite(RELAY_PINS[index], state ? RELAY_ON : RELAY_OFF);
-    Serial.printf("⚡ Relay %02d (GPIO %02d) -> %s | %s\n", index + 1, RELAY_PINS[index], state ? "ON" : "OFF", reason.c_str());
+    Serial.printf("⚡ %s (GPIO %02d) -> %s | %s\n", configs[index].name, RELAY_PINS[index], state ? "ON" : "OFF", reason.c_str());
 }
 
 void turnAll(bool state) {
     for (int i = 0; i < NUM_RELAYS; i++) {
-        configs[i].mode = 0;
+        configs[i].mode = 3; // Manual
         setRelay(i, state, state ? "Manual Master ON" : "Manual Master OFF");
     }
 }
 
 void setAllAuto() {
     for (int i = 0; i < NUM_RELAYS; i++) {
-        configs[i].mode = 1; // 1 = Auto Temp
+        configs[i].mode = 0; // 0 = Threshold Only
+        if (configs[i].sensor == 0) {
+            configs[i].sensor = 1; // 1 = Avg Temp if unassigned
+        }
         saveRelayConfig(i);
     }
     evaluateAutoRules();
@@ -1299,31 +1614,103 @@ void loadRelayConfigs() {
     };
 
     for (int i = 0; i < NUM_RELAYS; i++) {
-        String keyM = "m" + String(i);
+        String keyNm  = "nm" + String(i);
+        String keyS   = "s" + String(i);
+        String keyM   = "m" + String(i);
         String keyMin = "min" + String(i);
         String keyMax = "max" + String(i);
-        String keyA = "a" + String(i);
+        String keyA   = "a" + String(i);
+        String keyTon = "ton" + String(i);
+        String keyToff= "toff" + String(i);
 
-        int m = prefRelay.getInt(keyM.c_str(), 1);
-        configs[i].mode   = m;
+        char defName[16];
+        snprintf(defName, sizeof(defName), "Relay %02d", i + 1);
+        String sName = prefRelay.getString(keyNm.c_str(), defName);
+        strncpy(configs[i].name, sName.c_str(), sizeof(configs[i].name) - 1);
+        configs[i].name[sizeof(configs[i].name) - 1] = '\0';
+
+        configs[i].sensor = prefRelay.getInt(keyS.c_str(), 1); // Default Avg Temp
+        configs[i].mode   = prefRelay.getInt(keyM.c_str(), 0); // Default Threshold Only
+
+        // Auto-recover any relay stuck in Manual mode (3) that has an assigned sensor
+        if (configs[i].mode == 3 && configs[i].sensor > 0) {
+            configs[i].mode = 0;
+            saveRelayConfig(i);
+        }
 
         configs[i].minVal = prefRelay.getFloat(keyMin.c_str(), defaultMins[i]);
         configs[i].maxVal = prefRelay.getFloat(keyMax.c_str(), defaultMaxs[i]);
         configs[i].action = prefRelay.getInt(keyA.c_str(), 0);
+        configs[i].timerOnSec  = prefRelay.getInt(keyTon.c_str(), 30);
+        configs[i].timerOffSec = prefRelay.getInt(keyToff.c_str(), 120);
+        if (configs[i].timerOnSec <= 0) configs[i].timerOnSec = 30;
+        if (configs[i].timerOffSec <= 0) configs[i].timerOffSec = 120;
     }
+
+    // Load Sensor Calibrations & Offsets
+    calib.t1Offset   = prefRelay.getFloat("calT1", 0.0f);
+    calib.h1Offset   = prefRelay.getFloat("calH1", 0.0f);
+    calib.t2Offset   = prefRelay.getFloat("calT2", 0.0f);
+    calib.h2Offset   = prefRelay.getFloat("calH2", 0.0f);
+    calib.t3Offset   = prefRelay.getFloat("calT3", 0.0f);
+    calib.h3Offset   = prefRelay.getFloat("calH3", 0.0f);
+    calib.nh3Factor  = prefRelay.getFloat("calNH3", 1.0f);
+    calib.flowFactor = prefRelay.getFloat("calFlow", 7.5f);
+    if (calib.flowFactor < 0.1f) calib.flowFactor = 7.5f;
+    if (calib.nh3Factor <= 0.0f) calib.nh3Factor = 1.0f;
 }
 
 void saveRelayConfig(int idx) {
     if (idx < 0 || idx >= NUM_RELAYS) return;
-    String keyM = "m" + String(idx);
+    String keyNm  = "nm" + String(idx);
+    String keyS   = "s" + String(idx);
+    String keyM   = "m" + String(idx);
     String keyMin = "min" + String(idx);
     String keyMax = "max" + String(idx);
-    String keyA = "a" + String(idx);
+    String keyA   = "a" + String(idx);
+    String keyTon = "ton" + String(idx);
+    String keyToff= "toff" + String(idx);
 
+    prefRelay.putString(keyNm.c_str(), configs[idx].name);
+    prefRelay.putInt(keyS.c_str(), configs[idx].sensor);
     prefRelay.putInt(keyM.c_str(), configs[idx].mode);
     prefRelay.putFloat(keyMin.c_str(), configs[idx].minVal);
     prefRelay.putFloat(keyMax.c_str(), configs[idx].maxVal);
     prefRelay.putInt(keyA.c_str(), configs[idx].action);
+    prefRelay.putInt(keyTon.c_str(), configs[idx].timerOnSec);
+    prefRelay.putInt(keyToff.c_str(), configs[idx].timerOffSec);
+}
+
+void saveCalibration() {
+    prefRelay.putFloat("calT1", calib.t1Offset);
+    prefRelay.putFloat("calH1", calib.h1Offset);
+    prefRelay.putFloat("calT2", calib.t2Offset);
+    prefRelay.putFloat("calH2", calib.h2Offset);
+    prefRelay.putFloat("calT3", calib.t3Offset);
+    prefRelay.putFloat("calH3", calib.h3Offset);
+    prefRelay.putFloat("calNH3", calib.nh3Factor);
+    prefRelay.putFloat("calFlow", calib.flowFactor);
+    Serial.printf("⚡ Saved Calibration: T1:%+.1f, H1:%+.1f, T2:%+.1f, H2:%+.1f, T3:%+.1f, H3:%+.1f, NH3:%.2fx, Flow:%.2f\n",
+        calib.t1Offset, calib.h1Offset, calib.t2Offset, calib.h2Offset, calib.t3Offset, calib.h3Offset, calib.nh3Factor, calib.flowFactor);
+}
+
+void handleSaveCalibration() {
+    if (server.hasArg("t1"))   calib.t1Offset   = server.arg("t1").toFloat();
+    if (server.hasArg("h1"))   calib.h1Offset   = server.arg("h1").toFloat();
+    if (server.hasArg("t2"))   calib.t2Offset   = server.arg("t2").toFloat();
+    if (server.hasArg("h2"))   calib.h2Offset   = server.arg("h2").toFloat();
+    if (server.hasArg("t3"))   calib.t3Offset   = server.arg("t3").toFloat();
+    if (server.hasArg("h3"))   calib.h3Offset   = server.arg("h3").toFloat();
+    if (server.hasArg("nh3"))  calib.nh3Factor  = server.arg("nh3").toFloat();
+    if (server.hasArg("flow")) calib.flowFactor = server.arg("flow").toFloat();
+
+    if (calib.flowFactor < 0.1f) calib.flowFactor = 7.5f;
+    if (calib.nh3Factor <= 0.0f) calib.nh3Factor = 1.0f;
+
+    saveCalibration();
+    readDHTSensor();
+    evaluateAutoRules();
+    server.send(200, "text/plain", "Calibration Saved");
 }
 
 // --- WEB HANDLERS ---
@@ -1333,7 +1720,7 @@ void handleRelayToggle() {
         int id = server.arg("id").toInt() - 1;
         bool state = (server.arg("state") == "1");
         if (id >= 0 && id < NUM_RELAYS) {
-            configs[id].mode = 0;
+            configs[id].mode = 3; // Manual mode
             saveRelayConfig(id);
             setRelay(id, state, "Manual Web Toggle");
             server.send(200, "text/plain", "OK");
@@ -1354,13 +1741,27 @@ void handleAllRelays() {
 }
 
 void handleSaveRelayConfig() {
-    if (server.hasArg("id") && server.hasArg("mode") && server.hasArg("min") && server.hasArg("max") && server.hasArg("action")) {
+    if (server.hasArg("id")) {
         int id = server.arg("id").toInt() - 1;
         if (id >= 0 && id < NUM_RELAYS) {
-            configs[id].mode   = server.arg("mode").toInt();
-            configs[id].minVal = server.arg("min").toFloat();
-            configs[id].maxVal = server.arg("max").toFloat();
-            configs[id].action = server.arg("action").toInt();
+            if (server.hasArg("name")) {
+                String n = server.arg("name");
+                n.trim();
+                if (n.length() > 0) {
+                    strncpy(configs[id].name, n.c_str(), sizeof(configs[id].name) - 1);
+                    configs[id].name[sizeof(configs[id].name) - 1] = '\0';
+                }
+            }
+            if (server.hasArg("sensor")) configs[id].sensor = server.arg("sensor").toInt();
+            if (server.hasArg("mode"))   configs[id].mode   = server.arg("mode").toInt();
+            if (server.hasArg("min"))    configs[id].minVal = server.arg("min").toFloat();
+            if (server.hasArg("max"))    configs[id].maxVal = server.arg("max").toFloat();
+            if (server.hasArg("action")) configs[id].action = server.arg("action").toInt();
+            if (server.hasArg("ton"))    configs[id].timerOnSec  = server.arg("ton").toInt();
+            if (server.hasArg("toff"))   configs[id].timerOffSec = server.arg("toff").toInt();
+
+            if (configs[id].timerOnSec <= 0) configs[id].timerOnSec = 30;
+            if (configs[id].timerOffSec <= 0) configs[id].timerOffSec = 120;
 
             // Ensure minVal is lower than maxVal
             if (configs[id].minVal > configs[id].maxVal) {
@@ -1369,11 +1770,13 @@ void handleSaveRelayConfig() {
                 configs[id].maxVal = t;
             }
 
+            relayTimerLastSwitch[id] = 0; // Trigger timer fresh
             saveRelayConfig(id);
             readDHTSensor();
             evaluateSingleRelay(id, true);
-            Serial.printf("⚡ Web Saved Relay %d: Mode=%d, Min=%.1f, Max=%.1f, Action=%d -> State: %s (%s)\n",
-                id + 1, configs[id].mode, configs[id].minVal, configs[id].maxVal, configs[id].action,
+            Serial.printf("⚡ Web Saved Relay %d [%s]: Sensor=%d, Mode=%d, Min=%.1f, Max=%.1f, Ton=%d, Toff=%d -> State: %s (%s)\n",
+                id + 1, configs[id].name, configs[id].sensor, configs[id].mode, configs[id].minVal, configs[id].maxVal,
+                configs[id].timerOnSec, configs[id].timerOffSec,
                 relayStates[id] ? "ON" : "OFF", relayReason[id].c_str());
             server.send(200, "text/plain", "Config Saved");
             return;
@@ -1389,7 +1792,8 @@ void handleBatchRange() {
         if (bMin > bMax) { float t = bMin; bMin = bMax; bMax = t; }
 
         for (int i = 0; i < NUM_RELAYS; i++) {
-            configs[i].mode = 1; // Auto Temp
+            configs[i].sensor = 1; // Auto Avg Temp
+            configs[i].mode   = 0; // Threshold Only
             configs[i].action = 0; // Outside Range ON
             configs[i].minVal = bMin;
             configs[i].maxVal = bMax;
@@ -1431,12 +1835,16 @@ void handleGetStatus() {
         if (i > 0) json += ",";
         json += "{";
         json += "\"id\":" + String(i + 1) + ",";
+        json += "\"name\":\"" + String(configs[i].name) + "\",";
         json += "\"pin\":" + String(RELAY_PINS[i]) + ",";
         json += "\"state\":" + String(relayStates[i] ? "1" : "0") + ",";
+        json += "\"sensor\":" + String(configs[i].sensor) + ",";
         json += "\"mode\":" + String(configs[i].mode) + ",";
         json += "\"min\":" + String(configs[i].minVal, 1) + ",";
         json += "\"max\":" + String(configs[i].maxVal, 1) + ",";
         json += "\"action\":" + String(configs[i].action) + ",";
+        json += "\"ton\":" + String(configs[i].timerOnSec) + ",";
+        json += "\"toff\":" + String(configs[i].timerOffSec) + ",";
         json += "\"reason\":\"" + relayReason[i] + "\"";
         json += "}";
     }
@@ -1446,7 +1854,25 @@ void handleGetStatus() {
     json += "\"staSSID\":\"" + (WiFi.status() == WL_CONNECTED ? WiFi.SSID() : saved_ssid) + "\",";
     json += "\"staIP\":\"" + (WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : "Not Connected") + "\",";
     json += "\"staStatus\":\"" + sta_status_str + "\",";
-    json += "\"apIP\":\"" + WiFi.softAPIP().toString() + "\"";
+    json += "\"apIP\":\"" + WiFi.softAPIP().toString() + "\",";
+
+    json += "\"calib\":{";
+    json += "\"t1\":" + String(calib.t1Offset, 1) + ",";
+    json += "\"h1\":" + String(calib.h1Offset, 1) + ",";
+    json += "\"t2\":" + String(calib.t2Offset, 1) + ",";
+    json += "\"h2\":" + String(calib.h2Offset, 1) + ",";
+    json += "\"t3\":" + String(calib.t3Offset, 1) + ",";
+    json += "\"h3\":" + String(calib.h3Offset, 1) + ",";
+    json += "\"nh3\":" + String(calib.nh3Factor, 2) + ",";
+    json += "\"flow\":" + String(calib.flowFactor, 2) + ",";
+    json += "\"rawT1\":" + String(rawTemp1, 1) + ",";
+    json += "\"rawH1\":" + String(rawHum1, 1) + ",";
+    json += "\"rawT2\":" + String(rawTemp2, 1) + ",";
+    json += "\"rawH2\":" + String(rawHum2, 1) + ",";
+    json += "\"rawT3\":" + String(rawTemp3, 1) + ",";
+    json += "\"rawH3\":" + String(rawHum3, 1) + ",";
+    json += "\"rawNH3\":" + String(rawNH3, 1);
+    json += "}";
     json += "}";
     server.send(200, "application/json", json);
 }
@@ -1593,12 +2019,12 @@ void handleRoot() {
             <div class="sensor-card">
                 <div class="sensor-label">🌡️ Avg Temperature</div>
                 <div class="sensor-val" id="tempVal" style="color:#38bdf8;">--.- °C</div>
-                <span id="tempStatus" style="font-size:0.75rem; color:var(--text-dim);">T1: -- | T2: -- | T3: --</span>
+                <span id="tempStatus" style="font-size:0.75rem; color:var(--text-dim);">S1: -- | S2: -- | S3: --</span>
             </div>
             <div class="sensor-card">
                 <div class="sensor-label">💧 Avg Humidity</div>
                 <div class="sensor-val" id="humVal" style="color:#06b6d4;">--.- %</div>
-                <span id="humStatus" style="font-size:0.75rem; color:var(--text-dim);">H1: -- | H2: -- | H3: --</span>
+                <span id="humStatus" style="font-size:0.75rem; color:var(--text-dim);">S1: -- | S2: -- | S3: --</span>
             </div>
             <div class="sensor-card">
                 <div class="sensor-label">🌊 Water Flow (GPIO 46)</div>
@@ -1655,6 +2081,92 @@ void handleRoot() {
             <div id="relayList"></div>
         </div>
 
+        <!-- Sensors Calibration Panel -->
+        <div class="card">
+            <div class="card-title">
+                <span>⚙️ Sensors Calibration & Offsets</span>
+                <span style="font-size:0.75rem; color:var(--text-dim)">Calibrated = Raw + Offset</span>
+            </div>
+            
+            <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap:10px;">
+                <!-- DHT1 -->
+                <div style="background:#0f172a; padding:10px; border-radius:8px; border:1px solid #334155;">
+                    <div style="font-size:0.8rem; font-weight:700; color:var(--accent); margin-bottom:6px;">🌡️ Sensor #1 (GPIO 8)</div>
+                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px;">
+                        <div>
+                            <label style="font-size:0.7rem; color:var(--text-dim); display:block; margin-bottom:2px;">Temp Offset (°C)</label>
+                            <input type="number" step="0.1" id="calT1" class="input-sm" value="0.0">
+                            <span id="calT1Live" style="font-size:0.7rem; color:#94a3b8; display:block; margin-top:2px;">Raw: --</span>
+                        </div>
+                        <div>
+                            <label style="font-size:0.7rem; color:var(--text-dim); display:block; margin-bottom:2px;">Hum Offset (%)</label>
+                            <input type="number" step="0.5" id="calH1" class="input-sm" value="0.0">
+                            <span id="calH1Live" style="font-size:0.7rem; color:#94a3b8; display:block; margin-top:2px;">Raw: --</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- DHT2 -->
+                <div style="background:#0f172a; padding:10px; border-radius:8px; border:1px solid #334155;">
+                    <div style="font-size:0.8rem; font-weight:700; color:var(--accent); margin-bottom:6px;">🌡️ Sensor #2 (GPIO 48)</div>
+                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px;">
+                        <div>
+                            <label style="font-size:0.7rem; color:var(--text-dim); display:block; margin-bottom:2px;">Temp Offset (°C)</label>
+                            <input type="number" step="0.1" id="calT2" class="input-sm" value="0.0">
+                            <span id="calT2Live" style="font-size:0.7rem; color:#94a3b8; display:block; margin-top:2px;">Raw: --</span>
+                        </div>
+                        <div>
+                            <label style="font-size:0.7rem; color:var(--text-dim); display:block; margin-bottom:2px;">Hum Offset (%)</label>
+                            <input type="number" step="0.5" id="calH2" class="input-sm" value="0.0">
+                            <span id="calH2Live" style="font-size:0.7rem; color:#94a3b8; display:block; margin-top:2px;">Raw: --</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- DHT3 -->
+                <div style="background:#0f172a; padding:10px; border-radius:8px; border:1px solid #334155;">
+                    <div style="font-size:0.8rem; font-weight:700; color:var(--accent); margin-bottom:6px;">🌡️ Sensor #3 (GPIO 42)</div>
+                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px;">
+                        <div>
+                            <label style="font-size:0.7rem; color:var(--text-dim); display:block; margin-bottom:2px;">Temp Offset (°C)</label>
+                            <input type="number" step="0.1" id="calT3" class="input-sm" value="0.0">
+                            <span id="calT3Live" style="font-size:0.7rem; color:#94a3b8; display:block; margin-top:2px;">Raw: --</span>
+                        </div>
+                        <div>
+                            <label style="font-size:0.7rem; color:var(--text-dim); display:block; margin-bottom:2px;">Hum Offset (%)</label>
+                            <input type="number" step="0.5" id="calH3" class="input-sm" value="0.0">
+                            <span id="calH3Live" style="font-size:0.7rem; color:#94a3b8; display:block; margin-top:2px;">Raw: --</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Gas & Flow -->
+                <div style="background:#0f172a; padding:10px; border-radius:8px; border:1px solid #334155;">
+                    <div style="font-size:0.8rem; font-weight:700; color:var(--accent); margin-bottom:6px;">☣️ Gas & 🌊 Flow</div>
+                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px;">
+                        <div>
+                            <label style="font-size:0.7rem; color:var(--text-dim); display:block; margin-bottom:2px;">NH3 Multiplier (x)</label>
+                            <input type="number" step="0.05" id="calNH3" class="input-sm" value="1.00">
+                            <span id="calNH3Live" style="font-size:0.7rem; color:#94a3b8; display:block; margin-top:2px;">Raw: --</span>
+                        </div>
+                        <div>
+                            <label style="font-size:0.7rem; color:var(--text-dim); display:block; margin-bottom:2px;">Flow Factor (pulses/s)</label>
+                            <input type="number" step="0.1" id="calFlow" class="input-sm" value="7.5">
+                            <span style="font-size:0.7rem; color:#94a3b8; display:block; margin-top:2px;">Std: 7.5</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-top:12px; gap:8px; flex-wrap:wrap;">
+                <button class="btn btn-off" style="padding:7px 12px; font-size:0.78rem;" onclick="resetCalibration()">🔄 Reset to 0</button>
+                <div style="display:flex; align-items:center; gap:8px;">
+                    <span id="calibMsg" style="font-size:0.78rem; color:#22c55e; font-weight:bold;"></span>
+                    <button class="btn btn-primary" id="btnSaveCalib" style="padding:7px 16px; font-size:0.82rem;" onclick="saveCalibration()">💾 Save Calibration</button>
+                </div>
+            </div>
+        </div>
+
         <div class="card">
             <div class="card-title">
                 <span>📡 Network Status</span>
@@ -1692,7 +2204,7 @@ void handleRoot() {
             card.innerHTML = `
                 <div class="relay-header">
                     <div class="relay-title">
-                        <span>Relay ${i}</span>
+                        <span id="rTitleText${i}">Relay ${i}</span>
                         <span style="font-size:0.72rem; color:var(--text-dim)">(GPIO ${PINS[i-1]})</span>
                     </div>
                     <div style="display:flex; align-items:center; gap:8px;">
@@ -1704,18 +2216,40 @@ void handleRoot() {
                     </div>
                 </div>
 
+                <div style="display:flex; align-items:center; gap:8px; margin: 4px 0 8px 0;">
+                    <label style="font-size:0.75rem; color:var(--text-dim); font-weight:600; min-width:48px;">🏷️ Name:</label>
+                    <input type="text" id="rName${i}" class="input-sm" maxlength="15" placeholder="e.g. Exhaust Fan ${i}" style="font-weight:600; color:var(--accent);">
+                </div>
+
                 <div class="config-grid">
                     <div class="field">
-                        <label>Mode</label>
-                        <select id="rMode${i}" class="input-sm" onchange="updateModeUnits(${i})">
-                            <option value="1">🌡️ Auto Temp</option>
-                            <option value="2">💧 Auto Hum</option>
-                            <option value="3">☣️ Auto Ammonia (NH3)</option>
-                            <option value="0">✋ Manual</option>
+                        <label>📡 Sensor Source</label>
+                        <select id="rSensor${i}" class="input-sm" onchange="updateSensorUnits(${i})">
+                            <option value="1">🌡️ Avg Temperature (°C)</option>
+                            <option value="2">💧 Avg Humidity (%)</option>
+                            <option value="3">🌡️ Sensor 1 Temp (°C)</option>
+                            <option value="4">💧 Sensor 1 Hum (%)</option>
+                            <option value="5">🌡️ Sensor 2 Temp (°C)</option>
+                            <option value="6">💧 Sensor 2 Hum (%)</option>
+                            <option value="7">🌡️ Sensor 3 Temp (°C)</option>
+                            <option value="8">💧 Sensor 3 Hum (%)</option>
+                            <option value="9">☣️ Ammonia NH3 (ppm)</option>
+                            <option value="10">🌊 Water Flow Rate (L/min)</option>
+                            <option value="11">⏱️ Pure Cyclic Timer (No Sensor)</option>
+                            <option value="0">✋ None (Manual Control)</option>
                         </select>
                     </div>
                     <div class="field">
-                        <label>Action</label>
+                        <label>⚙️ Control Mode</label>
+                        <select id="rMode${i}" class="input-sm" onchange="updateModeUnits(${i})">
+                            <option value="0">📊 Sensor Threshold Only</option>
+                            <option value="1">⏱️ Timer + Sensor Override</option>
+                            <option value="2">⏱️ Pure Cyclic Timer</option>
+                            <option value="3">✋ Manual Control</option>
+                        </select>
+                    </div>
+                    <div class="field">
+                        <label>⚡ Action</label>
                         <select id="rAction${i}" class="input-sm">
                             <option value="0">⚡ Outside Range ON (≤Min or ≥Max)</option>
                             <option value="1">🟢 Inside Range ON (Min to Max)</option>
@@ -1724,18 +2258,28 @@ void handleRoot() {
                         </select>
                     </div>
                     <div class="field">
-                        <label id="rMaxLbl${i}">🔥 Max Threshold (°C) [ON if ≥]</label>
+                        <label id="rMaxLbl${i}">🔥 Max Threshold [ON if ≥]</label>
                         <input type="number" step="0.5" id="rMax${i}" class="input-sm">
                     </div>
                     <div class="field">
-                        <label id="rMinLbl${i}">❄️ Min Threshold (°C) [ON if ≤]</label>
+                        <label id="rMinLbl${i}">❄️ Min Threshold [ON if ≤]</label>
                         <input type="number" step="0.5" id="rMin${i}" class="input-sm">
+                    </div>
+                    <div class="field" id="rTimerBox${i}" style="grid-column: 1 / -1; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; background: rgba(56,189,248,0.06); padding: 8px; border-radius: 8px; border: 1px dashed rgba(56,189,248,0.3); margin-top: 4px;">
+                        <div>
+                            <label style="font-size:0.72rem; color:var(--accent); font-weight:600;">⏱️ Run Time (Sec)</label>
+                            <input type="number" id="rTon${i}" class="input-sm" min="5" max="3600" value="30">
+                        </div>
+                        <div>
+                            <label style="font-size:0.72rem; color:var(--accent); font-weight:600;">⏸️ Pause Time (Sec)</label>
+                            <input type="number" id="rToff${i}" class="input-sm" min="5" max="3600" value="120">
+                        </div>
                     </div>
                 </div>
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px; flex-wrap:wrap; gap:6px;">
                     <div style="display:flex; gap:6px;">
-                        <button class="btn-preset btn-preset-on" title="Auto-set thresholds to turn ON now at live temp" onclick="quickSet(${i}, true)">🎯 Set ON</button>
-                        <button class="btn-preset btn-preset-off" title="Auto-set thresholds to turn OFF now at live temp" onclick="quickSet(${i}, false)">⭕ Set OFF</button>
+                        <button class="btn-preset btn-preset-on" title="Auto-set thresholds to turn ON now" onclick="quickSet(${i}, true)">🎯 Set ON</button>
+                        <button class="btn-preset btn-preset-off" title="Auto-set thresholds to turn OFF now" onclick="quickSet(${i}, false)">⭕ Set OFF</button>
                     </div>
                     <button class="btn-save" id="rSaveBtn${i}" onclick="saveConfig(${i})">💾 Save</button>
                 </div>
@@ -1745,27 +2289,33 @@ void handleRoot() {
         }
 
         let liveSensorTemp = 30.0;
+        let liveSensorHum = 60.0;
+        let liveSensorFlow = 0.0;
+        let liveSensorNH3 = 0.0;
 
         function updateUI(d) {
             if(d.sensorOk) {
                 liveSensorTemp = parseFloat(d.temp);
+                liveSensorHum = parseFloat(d.hum);
                 document.getElementById('tempVal').innerText = d.temp + ' °C';
                 document.getElementById('humVal').innerText = d.hum + ' %';
-                document.getElementById('tempStatus').innerText = `T1: ${d.temp1}° | T2: ${d.temp2}° | T3: ${d.temp3}° (Avg: ${d.temp}°)`;
-                document.getElementById('humStatus').innerText = `H1: ${d.hum1}% | H2: ${d.hum2}% | H3: ${d.hum3}% (Avg: ${d.hum}%)`;
+                document.getElementById('tempStatus').innerText = `S1: ${d.temp1}° | S2: ${d.temp2}° | S3: ${d.temp3}° (Avg: ${d.temp}°)`;
+                document.getElementById('humStatus').innerText = `S1: ${d.hum1}% | S2: ${d.hum2}% | S3: ${d.hum3}% (Avg: ${d.hum}%)`;
             } else {
                 document.getElementById('tempVal').innerText = '--.- °C';
                 document.getElementById('humVal').innerText = '--.- %';
-                document.getElementById('tempStatus').innerText = 'Sensor error (Check GPIO 8, 3, 42)';
-                document.getElementById('humStatus').innerText = 'Sensor error (Check GPIO 8, 3, 42)';
+                document.getElementById('tempStatus').innerText = 'Sensor error (Check GPIO 8, 48, 42)';
+                document.getElementById('humStatus').innerText = 'Sensor error (Check GPIO 8, 48, 42)';
             }
 
             if(d.flowRate !== undefined) {
+                liveSensorFlow = parseFloat(d.flowRate);
                 document.getElementById('flowVal').innerText = d.flowRate + ' L/m';
                 document.getElementById('flowStatus').innerText = `Total: ${d.totalLiters} L | ${d.flowPulses} Pulses`;
             }
 
             if(d.nh3 !== undefined) {
+                liveSensorNH3 = parseFloat(d.nh3);
                 document.getElementById('nh3Val').innerText = d.nh3 + ' ppm';
                 const elNh3 = document.getElementById('nh3Status');
                 if(!d.nh3Warmed) {
@@ -1795,6 +2345,7 @@ void handleRoot() {
                 const badge = document.getElementById('rBadge' + r.id);
                 const sw = document.getElementById('rSwitch' + r.id);
                 const reason = document.getElementById('rReason' + r.id);
+                const titleText = document.getElementById('rTitleText' + r.id);
 
                 if(card && badge && sw) {
                     if(r.state === 1) {
@@ -1809,13 +2360,23 @@ void handleRoot() {
                         sw.checked = false;
                     }
                     if(reason) reason.innerText = r.reason || '';
+                    if(titleText) titleText.innerText = (r.name && r.name.length > 0) ? r.name : ('Relay ' + r.id);
 
                     // NEVER overwrite user inputs while user is typing / active in that field!
+                    const nameEl = document.getElementById('rName' + r.id);
+                    const sensorEl = document.getElementById('rSensor' + r.id);
                     const modeEl = document.getElementById('rMode' + r.id);
                     const actionEl = document.getElementById('rAction' + r.id);
                     const minEl = document.getElementById('rMin' + r.id);
                     const maxEl = document.getElementById('rMax' + r.id);
+                    const tonEl = document.getElementById('rTon' + r.id);
+                    const toffEl = document.getElementById('rToff' + r.id);
 
+                    if(nameEl && document.activeElement !== nameEl) nameEl.value = r.name || '';
+                    if(sensorEl && document.activeElement !== sensorEl) {
+                        sensorEl.value = (r.sensor !== undefined) ? r.sensor : 1;
+                        updateSensorUnits(r.id);
+                    }
                     if(modeEl && document.activeElement !== modeEl) {
                         modeEl.value = r.mode;
                         updateModeUnits(r.id);
@@ -1823,19 +2384,55 @@ void handleRoot() {
                     if(actionEl && document.activeElement !== actionEl) actionEl.value = r.action;
                     if(minEl && document.activeElement !== minEl) minEl.value = r.min;
                     if(maxEl && document.activeElement !== maxEl) maxEl.value = r.max;
+                    if(tonEl && document.activeElement !== tonEl) tonEl.value = r.ton || 30;
+                    if(toffEl && document.activeElement !== toffEl) toffEl.value = r.toff || 120;
                 }
             });
+
+            if(d.calib) {
+                const c = d.calib;
+                const calT1 = document.getElementById('calT1');
+                const calH1 = document.getElementById('calH1');
+                const calT2 = document.getElementById('calT2');
+                const calH2 = document.getElementById('calH2');
+                const calT3 = document.getElementById('calT3');
+                const calH3 = document.getElementById('calH3');
+                const calNH3 = document.getElementById('calNH3');
+                const calFlow = document.getElementById('calFlow');
+
+                if(calT1 && document.activeElement !== calT1) calT1.value = c.t1;
+                if(calH1 && document.activeElement !== calH1) calH1.value = c.h1;
+                if(calT2 && document.activeElement !== calT2) calT2.value = c.t2;
+                if(calH2 && document.activeElement !== calH2) calH2.value = c.h2;
+                if(calT3 && document.activeElement !== calT3) calT3.value = c.t3;
+                if(calH3 && document.activeElement !== calH3) calH3.value = c.h3;
+                if(calNH3 && document.activeElement !== calNH3) calNH3.value = c.nh3;
+                if(calFlow && document.activeElement !== calFlow) calFlow.value = c.flow;
+
+                const lT1 = document.getElementById('calT1Live'); if(lT1) lT1.innerText = `Raw: ${c.rawT1}°C`;
+                const lH1 = document.getElementById('calH1Live'); if(lH1) lH1.innerText = `Raw: ${c.rawH1}%`;
+                const lT2 = document.getElementById('calT2Live'); if(lT2) lT2.innerText = `Raw: ${c.rawT2}°C`;
+                const lH2 = document.getElementById('calH2Live'); if(lH2) lH2.innerText = `Raw: ${c.rawH2}%`;
+                const lT3 = document.getElementById('calT3Live'); if(lT3) lT3.innerText = `Raw: ${c.rawT3}°C`;
+                const lH3 = document.getElementById('calH3Live'); if(lH3) lH3.innerText = `Raw: ${c.rawH3}%`;
+                const lNH3 = document.getElementById('calNH3Live'); if(lNH3) lNH3.innerText = `Raw: ${c.rawNH3} ppm`;
+            }
 
             document.getElementById('staStatus').innerText = d.staStatus;
             document.getElementById('staIP').innerText = d.staIP;
         }
 
-        function updateModeUnits(id) {
-            const modeEl = document.getElementById('rMode' + id);
-            if(!modeEl) return;
-            const m = modeEl.value;
-            const u = (m === '3') ? ' (ppm)' : ((m === '2') ? ' (%)' : ' (°C)');
-            const step = (m === '3') ? '1.0' : '0.5';
+        function updateSensorUnits(id) {
+            const sEl = document.getElementById('rSensor' + id);
+            if(!sEl) return;
+            const s = parseInt(sEl.value);
+            let u = ' (°C)';
+            let step = '0.5';
+            if(s === 2 || s === 4 || s === 6 || s === 8) { u = ' (%)'; step = '1.0'; }
+            else if(s === 9) { u = ' (ppm)'; step = '1.0'; }
+            else if(s === 10) { u = ' (L/min)'; step = '0.5'; }
+            else if(s === 11 || s === 0) { u = ''; }
+
             const minEl = document.getElementById('rMin' + id);
             const maxEl = document.getElementById('rMax' + id);
             if(minEl) minEl.step = step;
@@ -1844,6 +2441,22 @@ void handleRoot() {
             const minLbl = document.getElementById('rMinLbl' + id);
             if(maxLbl) maxLbl.innerText = '🔥 Max Threshold' + u + ' [ON if ≥]';
             if(minLbl) minLbl.innerText = '❄️ Min Threshold' + u + ' [ON if ≤]';
+        }
+
+        function updateModeUnits(id) {
+            const mEl = document.getElementById('rMode' + id);
+            if(!mEl) return;
+            const m = parseInt(mEl.value);
+            const tBox = document.getElementById('rTimerBox' + id);
+            if(tBox) {
+                if(m === 1 || m === 2) {
+                    tBox.style.opacity = '1.0';
+                    tBox.style.border = '1px solid #38bdf8';
+                } else {
+                    tBox.style.opacity = '0.45';
+                    tBox.style.border = '1px dashed #334155';
+                }
+            }
         }
 
         function fetchStatus() {
@@ -1904,23 +2517,24 @@ void handleRoot() {
         }
 
         function quickSet(id, turnOn) {
-            const curT = liveSensorTemp || 30.0;
-            const modeEl = document.getElementById('rMode' + id);
-            const actionEl = document.getElementById('rAction' + id);
+            const sEl = document.getElementById('rSensor' + id);
+            let s = sEl ? parseInt(sEl.value) : 1;
+            let curVal = liveSensorTemp || 30.0;
+            if(s === 2 || s === 4 || s === 6 || s === 8) curVal = liveSensorHum || 60.0;
+            else if(s === 9) curVal = liveSensorNH3 || 10.0;
+            else if(s === 10) curVal = liveSensorFlow || 1.0;
+
             const minEl = document.getElementById('rMin' + id);
             const maxEl = document.getElementById('rMax' + id);
-
-            if(modeEl) modeEl.value = '1'; // Auto Temp
-            if(actionEl) actionEl.value = '0'; // Outside Range ON
+            const actEl = document.getElementById('rAction' + id);
+            if(actEl) actEl.value = '0'; // Outside Range ON
 
             if(turnOn) {
-                // To turn ON immediately: set max lower than live temp (live temp >= max)
-                if(maxEl) maxEl.value = (curT - 0.5).toFixed(1);
-                if(minEl) minEl.value = (curT - 3.0).toFixed(1);
+                if(maxEl) maxEl.value = (curVal - 0.5).toFixed(1);
+                if(minEl) minEl.value = (curVal - 3.0).toFixed(1);
             } else {
-                // To turn OFF immediately: set live temp inside safe range (min < live temp < max)
-                if(minEl) minEl.value = (curT - 2.0).toFixed(1);
-                if(maxEl) maxEl.value = (curT + 2.0).toFixed(1);
+                if(minEl) minEl.value = (curVal - 2.0).toFixed(1);
+                if(maxEl) maxEl.value = (curVal + 2.0).toFixed(1);
             }
             saveConfig(id);
         }
@@ -1929,17 +2543,25 @@ void handleRoot() {
             const btn = document.getElementById('rSaveBtn' + id);
             if(btn) { btn.innerText = '⏳ Saving...'; btn.style.background = '#eab308'; }
 
+            const name = document.getElementById('rName' + id) ? document.getElementById('rName' + id).value : '';
+            const sensor = document.getElementById('rSensor' + id) ? document.getElementById('rSensor' + id).value : '1';
             const mode = document.getElementById('rMode' + id).value;
             const action = document.getElementById('rAction' + id).value;
             const minVal = document.getElementById('rMin' + id).value;
             const maxVal = document.getElementById('rMax' + id).value;
+            const tonVal = document.getElementById('rTon' + id) ? document.getElementById('rTon' + id).value : '30';
+            const toffVal = document.getElementById('rToff' + id) ? document.getElementById('rToff' + id).value : '120';
 
             const body = new URLSearchParams();
             body.append('id', id);
+            body.append('name', name);
+            body.append('sensor', sensor);
             body.append('mode', mode);
             body.append('action', action);
             body.append('min', minVal);
             body.append('max', maxVal);
+            body.append('ton', tonVal);
+            body.append('toff', toffVal);
 
             fetch('/saveconfig', { method: 'POST', body: body })
                 .then(r => r.text())
@@ -2026,6 +2648,56 @@ void handleRoot() {
                 alert('WiFi cleared.');
                 fetchStatus();
             });
+        }
+
+        function saveCalibration() {
+            const btn = document.getElementById('btnSaveCalib');
+            const msg = document.getElementById('calibMsg');
+            if(btn) { btn.innerText = '⏳ Saving...'; btn.style.background = '#eab308'; }
+
+            const body = new URLSearchParams();
+            body.append('t1', document.getElementById('calT1').value);
+            body.append('h1', document.getElementById('calH1').value);
+            body.append('t2', document.getElementById('calT2').value);
+            body.append('h2', document.getElementById('calH2').value);
+            body.append('t3', document.getElementById('calT3').value);
+            body.append('h3', document.getElementById('calH3').value);
+            body.append('nh3', document.getElementById('calNH3').value);
+            body.append('flow', document.getElementById('calFlow').value);
+
+            fetch('/savecalib', { method: 'POST', body: body })
+                .then(r => r.text())
+                .then(t => {
+                    if(btn) {
+                        btn.innerText = '✅ Saved!';
+                        btn.style.background = '#16a34a';
+                        setTimeout(() => {
+                            btn.innerText = '💾 Save Calibration';
+                            btn.style.background = '#2563eb';
+                        }, 1200);
+                    }
+                    if(msg) {
+                        msg.innerText = 'Calibration Saved!';
+                        setTimeout(() => { msg.innerText = ''; }, 3000);
+                    }
+                    fetchStatus();
+                })
+                .catch(() => {
+                    if(btn) { btn.innerText = '❌ Error'; btn.style.background = '#ef4444'; }
+                });
+        }
+
+        function resetCalibration() {
+            if(!confirm('Reset all sensor offsets to 0.0 and factor to 1.0?')) return;
+            document.getElementById('calT1').value = '0.0';
+            document.getElementById('calH1').value = '0.0';
+            document.getElementById('calT2').value = '0.0';
+            document.getElementById('calH2').value = '0.0';
+            document.getElementById('calT3').value = '0.0';
+            document.getElementById('calH3').value = '0.0';
+            document.getElementById('calNH3').value = '1.0';
+            document.getElementById('calFlow').value = '7.5';
+            saveCalibration();
         }
 
         fetchStatus();
